@@ -37,6 +37,7 @@ if is_freebsd
 endif
 
 wayland_client = dependency('wayland-client', version: '>=1.20.0')
+wayland_server = dependency('wayland-server', version: '>=1.20.0')
 wayland_protos = dependency('wayland-protocols', version: '>=1.25', fallback: 'wayland-protocols')
 # use native version of wayland-scanner when cross-compiling
 # meson does this too: https://github.com/mesonbuild/meson/blob/c649a2b8c59c9f49affca9bd89c126bfa0f54449/mesonbuild/modules/unstable_wayland.py#L48-L53
@@ -78,31 +79,52 @@ wayland_scanner_client = generator(
 	arguments: ['client-header', '@INPUT@', '@OUTPUT@'],
 )
 
-client_protos_src = []
-client_protos_headers = []
+wayland_scanner_server = generator(
+	wayland_scanner_prog,
+	output: '@BASENAME@-server-protocol.h',
+	arguments: ['server-header', '@INPUT@', '@OUTPUT@'],
+)
 
-client_protocols = [
+protos_src = []
+protos_headers = []
+
+protocols = [
 	[wl_protocol_dir, 'stable/xdg-shell/xdg-shell.xml'],
 	[wl_protocol_dir, 'staging/ext-session-lock/ext-session-lock-v1.xml'],
+	[wl_protocol_dir, 'unstable/xdg-output/xdg-output-unstable-v1.xml'],
+	[wl_protocol_dir, 'unstable/fullscreen-shell/fullscreen-shell-unstable-v1.xml'],
+	[wl_protocol_dir, 'unstable/linux-dmabuf/linux-dmabuf-unstable-v1.xml'],
 	['wlr-layer-shell-unstable-v1.xml'],
 	['wlr-input-inhibitor-unstable-v1.xml'],
+	['wayland-drm.xml'],
+]
+server_protocols = [
+	[wl_protocol_dir, 'unstable/xdg-output/xdg-output-unstable-v1.xml'],
+	[wl_protocol_dir, 'unstable/linux-dmabuf/linux-dmabuf-unstable-v1.xml'],
+	['wlr-layer-shell-unstable-v1.xml'],
+	['wayland-drm.xml'],
 ]
 
-foreach p : client_protocols
+foreach p : protocols
 	xml = join_paths(p)
-	client_protos_src += wayland_scanner_code.process(xml)
-	client_protos_headers += wayland_scanner_client.process(xml)
+	protos_src += wayland_scanner_code.process(xml)
+	protos_headers += wayland_scanner_client.process(xml)
 endforeach
 
-lib_client_protos = static_library(
-	'client_protos',
-	client_protos_src + client_protos_headers,
+foreach p : server_protocols
+	xml = join_paths(p)
+	protos_headers += wayland_scanner_server.process(xml)
+endforeach
+
+lib_protos = static_library(
+	'prootos',
+	protos_src + protos_headers,
 	dependencies: [wayland_client]
 ) # for the include directory
 
 client_protos = declare_dependency(
-	link_with: lib_client_protos,
-	sources: client_protos_headers,
+	link_with: lib_protos,
+	sources: protos_headers,
 )
 
 conf_data = configuration_data()
@@ -117,12 +139,14 @@ dependencies = [
 	math,
 	xkbcommon,
 	wayland_client,
+	wayland_server,
 ]
 
 sources = [
 	'background-image.c',
 	'cairo.c',
 	'comm.c',
+	'forward.c',
 	'log.c',
 	'loop.c',
 	'main.c',

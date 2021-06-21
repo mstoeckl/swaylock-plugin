@@ -3,11 +3,14 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <wayland-client.h>
+#include <wayland-server-core.h>
 #include "background-image.h"
 #include "cairo.h"
 #include "pool-buffer.h"
 #include "seat.h"
 #include "wlr-layer-shell-unstable-v1-client-protocol.h"
+#include "linux-dmabuf-unstable-v1-client-protocol.h"
+#include "wayland-drm-client-protocol.h"
 
 enum auth_state {
 	AUTH_STATE_IDLE,
@@ -63,6 +66,7 @@ struct swaylock_args {
 	bool show_failed_attempts;
 	bool daemonize;
 	bool indicator_idle_visible;
+	char *plugin_command;
 };
 
 struct swaylock_password {
@@ -71,16 +75,90 @@ struct swaylock_password {
 	char *buffer;
 };
 
+// for the plugin-based surface drawing
+struct swaylock_bg_server {
+    struct wl_display *display;
+	struct wl_event_loop *loop;
+    struct wl_global *wlr_layer_shell;
+	struct wl_global *compositor;
+	struct wl_global *shm;
+	struct wl_global *xdg_output_manager;
+	struct wl_global *zwp_linux_dmabuf;
+	struct wl_global *drm;
+
+	struct wl_client *surf_client;
+};
+
+struct dmabuf_modifier_pair {
+    uint32_t format;
+    uint32_t modifier_hi;
+    uint32_t modifier_lo;
+};
+
+struct feedback_tranche  {
+    dev_t tranche_device;
+    struct wl_array indices;
+    uint32_t flags;
+};
+struct dmabuf_feedback_state  {
+    dev_t main_device;
+    int table_fd;
+    int table_fd_size;
+    struct feedback_tranche *tranches;
+    size_t tranches_len;
+};
+
+// todo: merge with swaylock_bg_server ?
+struct forward_state {
+	/* these pointers are copies of those in swaylock_state */
+    struct wl_display *upstream_display;
+    struct wl_registry *upstream_registry;
+
+	struct wl_drm *drm;
+	struct wl_shm *shm;
+    /* this instance is used just for forwarding */
+    struct zwp_linux_dmabuf_v1 *linux_dmabuf;
+    /* list of wl_resources corresponding to (default/surface) feedback instances
+     * that should get updated when the upstream feedback is updated */
+    struct wl_list feedback_instances;
+	/* We only let the background generator create surfaces, but not
+	 * subsurfaces, because those are much trickier to implement correctly,
+	 * and a well designed background shouldn't need them anyway. */
+	struct wl_compositor *compositor;
+
+	uint32_t *shm_formats;
+	uint32_t shm_formats_len;
+
+    struct dmabuf_modifier_pair *dmabuf_formats;
+    uint32_t dmabuf_formats_len;
+
+    struct dmabuf_feedback_state current, pending;
+    struct feedback_tranche pending_tranche;
+};
+
+/* this is a resource associated to a downstream wl_surface */
+struct forward_surface {
+    struct wl_surface *upstream;
+
+    bool has_been_configured;
+    struct wl_resource *layer_surface; // downstream only
+
+    /* is null until get_layer_surface is called and initializes this */
+    struct swaylock_surface *sway_surface;
+};
+
 struct swaylock_state {
 	struct loop *eventloop;
 	struct loop_timer *clear_indicator_timer; // clears the indicator
 	struct loop_timer *clear_password_timer;  // clears the password buffer
-	struct wl_display *display;
+    struct wl_display *display;
 	struct wl_compositor *compositor;
 	struct wl_subcompositor *subcompositor;
 	struct zwlr_layer_shell_v1 *layer_shell;
 	struct zwlr_input_inhibit_manager_v1 *input_inhibit_manager;
 	struct wl_shm *shm;
+    struct zwp_linux_dmabuf_v1 *linux_dmabuf_at3;
+    struct zwp_linux_dmabuf_feedback_v1 *dmabuf_default_feedback;
 	struct wl_list surfaces;
 	struct wl_list images;
 	struct swaylock_args args;
@@ -91,6 +169,9 @@ struct swaylock_state {
 	bool run_display;
 	struct ext_session_lock_manager_v1 *ext_session_lock_manager_v1;
 	struct ext_session_lock_v1 *ext_session_lock_v1;
+	struct zxdg_output_manager_v1 *zxdg_output_manager;
+	struct forward_state forward;
+	struct swaylock_bg_server server;
 };
 
 struct swaylock_surface {
@@ -101,6 +182,9 @@ struct swaylock_surface {
 	struct wl_surface *surface;
 	struct wl_surface *child; // surface made into subsurface
 	struct wl_subsurface *subsurface;
+	// rendered by plugin, unsynchronized, placed between surface + child
+	struct wl_subsurface *plugin_subsurface;
+    struct forward_surface *plugin_child;
 	struct zwlr_layer_surface_v1 *layer_surface;
 	struct ext_session_lock_surface_v1 *ext_session_lock_surface_v1;
 	struct pool_buffer buffers[2];
@@ -113,7 +197,29 @@ struct swaylock_surface {
 	enum wl_output_subpixel subpixel;
 	char *output_name;
 	struct wl_list link;
+
+	struct wl_global *nested_server_output;
+	// todo: list of associated resources
+	struct wl_list nested_server_wl_output_resources;
+	struct wl_list nested_server_xdg_output_resources;
 };
+
+/* Forwarding interface. These create various resources which maintain an
+ * exactly corresponding resource on the server side. (With exceptions:
+ * wl_regions do not need to be forwarded, so such wl_region-type wl_resources
+ * lack user data.
+ *
+ * This solution is only good for a prototype, because blind forwarding lets
+ * a bad plugin process directly overload the compositor, instead of overloading
+ * swaylock. The correct thing to do is to fully maintain local buffer/surface
+ * state, and only upload buffer data or send damage as needed; it is better
+ * to crash swaylock than to crash the compositor.
+ */
+void bind_wl_compositor(struct wl_client *client, void *data, uint32_t version, uint32_t id);
+void bind_wl_shm(struct wl_client *client, void *data, uint32_t version, uint32_t id);
+void bind_linux_dmabuf(struct wl_client *client, void *data, uint32_t version, uint32_t id);
+void bind_drm(struct wl_client *client, void *data, uint32_t version, uint32_t id);
+void send_dmabuf_feedback_data(struct wl_resource *feedback, const struct dmabuf_feedback_state *state);
 
 // There is exactly one swaylock_image for each -i argument
 struct swaylock_image {

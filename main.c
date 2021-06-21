@@ -11,9 +11,12 @@
 #include <string.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
+#include <sys/socket.h>
 #include <time.h>
 #include <unistd.h>
 #include <wayland-client.h>
+#include <wayland-server-core.h>
+#include <wayland-server-protocol.h>
 #include <wordexp.h>
 #include "background-image.h"
 #include "cairo.h"
@@ -27,6 +30,16 @@
 #include "wlr-input-inhibitor-unstable-v1-client-protocol.h"
 #include "wlr-layer-shell-unstable-v1-client-protocol.h"
 #include "ext-session-lock-v1-client-protocol.h"
+#include "xdg-output-unstable-v1-client-protocol.h"
+#include "fullscreen-shell-unstable-v1-client-protocol.h"
+#include "xdg-output-unstable-v1-server-protocol.h"
+#include "wlr-layer-shell-unstable-v1-server-protocol.h"
+#include "linux-dmabuf-unstable-v1-client-protocol.h"
+
+#define WL_OUTPUT_MM_PER_PIX 0.264
+#define WL_OUTPUT_VERSION 4
+static void bind_wl_output(struct wl_client *client, void *data,
+		uint32_t version, uint32_t id);
 
 static uint32_t parse_color(const char *color) {
 	if (color[0] == '#') {
@@ -104,6 +117,10 @@ static void destroy_surface(struct swaylock_surface *surface) {
 	if (surface->surface != NULL) {
 		wl_surface_destroy(surface->surface);
 	}
+	if (surface->plugin_child) {
+		/* detach this */
+		surface->plugin_child->sway_surface = NULL;
+	}
 	destroy_buffer(&surface->buffers[0]);
 	destroy_buffer(&surface->buffers[1]);
 	destroy_buffer(&surface->indicator_buffers[0]);
@@ -165,11 +182,12 @@ static void create_surface(struct swaylock_surface *surface) {
 	if (surface_is_opaque(surface) &&
 			surface->state->args.mode != BACKGROUND_MODE_CENTER &&
 			surface->state->args.mode != BACKGROUND_MODE_FIT) {
-		struct wl_region *region =
-			wl_compositor_create_region(surface->state->compositor);
-		wl_region_add(region, 0, 0, INT32_MAX, INT32_MAX);
-		wl_surface_set_opaque_region(surface->surface, region);
-		wl_region_destroy(region);
+//		struct wl_region *region =
+//			wl_compositor_create_region(surface->state->compositor);
+//		wl_region_add(region, 0, 0, INT32_MAX, INT32_MAX);
+//		wl_surface_set_opaque_region(surface->surface, region);
+//		wl_region_destroy(region);
+		// TODO: reenable if still valid
 	}
 
 	if (!state->ext_session_lock_v1) {
@@ -177,15 +195,52 @@ static void create_surface(struct swaylock_surface *surface) {
 	}
 }
 
+static void forward_confgure(struct swaylock_surface *surface, bool first_configure) {
+	if (first_configure && (surface->width > 0 && surface->height > 0)) {
+		// delay output creation until we know exactly what layer
+		// surface size we are provided with.
+		wl_global_create(surface->state->server.display,
+			&wl_output_interface, WL_OUTPUT_VERSION, surface, bind_wl_output);
+	} else if (surface->width > 0 && surface->height > 0) {
+		struct wl_resource *output;
+		wl_resource_for_each(output, &surface->nested_server_wl_output_resources) {
+			wl_output_send_geometry(output, 0, 0, 1 + WL_OUTPUT_MM_PER_PIX*surface->width,
+						1 + WL_OUTPUT_MM_PER_PIX*surface->height,
+						0, "swaylock","swaylock", WL_OUTPUT_TRANSFORM_NORMAL);
+			// todo: how should scale/etc affect this
+			wl_output_send_mode(output, 0, surface->width, surface->height, 0);
+			wl_output_send_done(output);
+		}
+		struct wl_resource *xdg_output;
+		wl_resource_for_each(xdg_output, &surface->nested_server_xdg_output_resources) {
+			zxdg_output_v1_send_logical_size(xdg_output, surface->width, surface->height);
+			zxdg_output_v1_send_done(xdg_output);
+		}
+		if (surface->plugin_child) {
+			/* reconfigure plugin surface with new size */
+			if (surface->plugin_child->has_been_configured) {
+				/* wait until the first commit/configure cycle is over */
+				uint32_t serial = wl_display_next_serial(wl_client_get_display(wl_resource_get_client(surface->plugin_child->layer_surface)));
+				zwlr_layer_surface_v1_send_configure(surface->plugin_child->layer_surface,
+								     serial,
+					surface->width, surface->height);
+
+			}
+		}
+	}
+}
+
 static void layer_surface_configure(void *data,
 		struct zwlr_layer_surface_v1 *layer_surface,
 		uint32_t serial, uint32_t width, uint32_t height) {
 	struct swaylock_surface *surface = data;
+	bool first_configure = surface->width <= 0 || surface->height <= 0;
 	surface->width = width;
 	surface->height = height;
 	surface->indicator_width = 0;
 	surface->indicator_height = 0;
 	zwlr_layer_surface_v1_ack_configure(layer_surface, serial);
+	forward_confgure(surface, first_configure);
 	render_frame_background(surface);
 	render_frame(surface);
 }
@@ -205,11 +260,13 @@ static void ext_session_lock_surface_v1_handle_configure(void *data,
 		struct ext_session_lock_surface_v1 *lock_surface, uint32_t serial,
 		uint32_t width, uint32_t height) {
 	struct swaylock_surface *surface = data;
+	bool first_configure = surface->width <= 0 || surface->height <= 0;
 	surface->width = width;
 	surface->height = height;
 	surface->indicator_width = 0;
 	surface->indicator_height = 0;
 	ext_session_lock_surface_v1_ack_configure(lock_surface, serial);
+	forward_confgure(surface, first_configure);
 	render_frame_background(surface);
 	render_frame(surface);
 }
@@ -330,18 +387,182 @@ static const struct ext_session_lock_v1_listener ext_session_lock_v1_listener = 
 	.finished = ext_session_lock_v1_handle_finished,
 };
 
+
+static void wl_shm_handle_format(void *data, struct wl_shm *wl_shm, uint32_t format) {
+	struct forward_state *forward = data;
+	uint32_t *new_fmts = realloc(forward->shm_formats, sizeof(uint32_t) * (forward->shm_formats_len + 1));
+	if (new_fmts) {
+		forward->shm_formats = new_fmts;
+		forward->shm_formats[forward->shm_formats_len] = format;
+		forward->shm_formats_len++;
+	}
+
+}
+
+static const struct wl_shm_listener shm_listener = {
+	.format = wl_shm_handle_format,
+};
+
+static void linux_dmabuf_handle_format(void *data, struct zwp_linux_dmabuf_v1 *linux_dmabuf,
+		uint32_t format) {
+	/* ignore, can be reconstructed from modifier list */
+}
+
+static void linux_dmabuf_handle_modifier(void *data, struct zwp_linux_dmabuf_v1 *linux_dmabuf,
+		uint32_t format, uint32_t modifier_hi, uint32_t modifier_lo) {
+	/* ignore, can be reconstructed from modifier list */
+	struct forward_state *forward = data;
+	// todo: quadratic runtime, fix. also sort these?
+	struct dmabuf_modifier_pair *new_fmts = realloc(forward->dmabuf_formats, sizeof(struct dmabuf_modifier_pair) * (forward->dmabuf_formats_len + 1));
+	if (new_fmts) {
+		forward->dmabuf_formats = new_fmts;
+		forward->dmabuf_formats[forward->dmabuf_formats_len].format = format;
+		forward->dmabuf_formats[forward->dmabuf_formats_len].modifier_lo = modifier_lo;
+		forward->dmabuf_formats[forward->dmabuf_formats_len].modifier_hi = modifier_hi;
+		forward->dmabuf_formats_len++;
+	}
+}
+
+static const struct zwp_linux_dmabuf_v1_listener linux_dmabuf_at3_listener = {
+	.format = linux_dmabuf_handle_format,
+	.modifier = linux_dmabuf_handle_modifier,
+};
+
+
+
+static void dmabuf_feedback_done(void *data,
+		struct zwp_linux_dmabuf_feedback_v1 *zwp_linux_dmabuf_feedback_v1) {
+	/* cleanup outdated tranches */
+	struct forward_state *forward = data;
+	for (size_t i = 0; i < forward->current.tranches_len; i++) {
+		wl_array_release(&forward->current.tranches[i].indices);
+	}
+	free(forward->current.tranches);
+	if (forward->current.table_fd != -1) {
+		close(forward->current.table_fd);
+	}
+
+	forward->current = forward->pending;
+
+	/* reset pending, keeping last main_device/table_fd values */
+	forward->pending.tranches = NULL;
+	forward->pending.tranches_len = 0;
+	if (forward->current.table_fd != -1) {
+		forward->pending.table_fd = dup(forward->current.table_fd);
+	}
+
+	/* notify all the client's feedback objects */
+	struct wl_resource *resource;
+	wl_resource_for_each(resource, &forward->feedback_instances) {
+		send_dmabuf_feedback_data(resource, &forward->current);
+	}
+}
+static void dmabuf_feedback_format_table(void *data,
+		struct zwp_linux_dmabuf_feedback_v1 *zwp_linux_dmabuf_feedback_v1,
+		int32_t fd, uint32_t size) {
+	struct forward_state *forward = data;
+	if (forward->pending.table_fd != -1) {
+		close(forward->pending.table_fd);
+	}
+	forward->pending.table_fd  = fd;
+	forward->pending.table_fd_size = size;
+}
+static void dmabuf_feedback_main_device(void *data,
+		struct zwp_linux_dmabuf_feedback_v1 *zwp_linux_dmabuf_feedback_v1,
+		struct wl_array *device) {
+	struct forward_state *forward = data;
+	memcpy(&forward->pending.main_device, device->data, sizeof(forward->pending.main_device));
+
+}
+static void dmabuf_feedback_tranche_done(void *data,
+		struct zwp_linux_dmabuf_feedback_v1 *zwp_linux_dmabuf_feedback_v1) {
+	struct forward_state *forward = data;
+	struct feedback_tranche  *new_tranches = realloc(forward->pending.tranches, sizeof(struct feedback_tranche) * (forward->pending.tranches_len + 1));
+	if (!new_tranches) {
+		swaylock_log(LOG_ERROR, "failed to expand tranche list");
+		return;
+	}
+
+	forward->pending.tranches = new_tranches;
+	forward->pending.tranches[forward->pending.tranches_len] = forward->pending_tranche;
+	forward->pending.tranches_len++;
+	/* reset the pending tranche state */
+	memset(&forward->pending_tranche.tranche_device, 0, sizeof(dev_t));
+	wl_array_init(&forward->pending_tranche.indices);
+	forward->pending_tranche.flags = 0;
+}
+
+static void dmabuf_feedback_tranche_target_device(void *data,
+		struct zwp_linux_dmabuf_feedback_v1 *zwp_linux_dmabuf_feedback_v1,
+		struct wl_array *device) {
+	struct forward_state *forward = data;
+	memcpy(&forward->pending_tranche.tranche_device, device->data, sizeof(forward->pending_tranche.tranche_device));
+}
+
+static void dmabuf_feedback_tranche_formats(void *data,
+		struct zwp_linux_dmabuf_feedback_v1 *zwp_linux_dmabuf_feedback_v1,
+		struct wl_array *indices) {
+	struct forward_state *forward = data;
+	if (wl_array_copy(&forward->pending_tranche.indices, indices) == -1) {
+		swaylock_log(LOG_ERROR, "failed to copy tranche format list");
+	}
+}
+static void dmabuf_feedback_tranche_flags(void *data,
+		struct zwp_linux_dmabuf_feedback_v1 *zwp_linux_dmabuf_feedback_v1,
+		uint32_t flags) {
+	struct forward_state *forward = data;
+	forward->pending_tranche.flags = flags;
+}
+
+static const struct zwp_linux_dmabuf_feedback_v1_listener dmabuf_feedback_listener = {
+	.done = dmabuf_feedback_done,
+	.format_table = dmabuf_feedback_format_table,
+	.main_device = dmabuf_feedback_main_device,
+	.tranche_done = dmabuf_feedback_tranche_done,
+	.tranche_target_device = dmabuf_feedback_tranche_target_device,
+	.tranche_formats = dmabuf_feedback_tranche_formats,
+	.tranche_flags = dmabuf_feedback_tranche_flags,
+};
+
 static void handle_global(void *data, struct wl_registry *registry,
 		uint32_t name, const char *interface, uint32_t version) {
 	struct swaylock_state *state = data;
 	if (strcmp(interface, wl_compositor_interface.name) == 0) {
 		state->compositor = wl_registry_bind(registry, name,
 				&wl_compositor_interface, 4);
+		state->forward.compositor = state->compositor;
 	} else if (strcmp(interface, wl_subcompositor_interface.name) == 0) {
 		state->subcompositor = wl_registry_bind(registry, name,
 				&wl_subcompositor_interface, 1);
 	} else if (strcmp(interface, wl_shm_interface.name) == 0) {
 		state->shm = wl_registry_bind(registry, name,
 				&wl_shm_interface, 1);
+		state->forward.shm = state->shm;
+		wl_shm_add_listener(state->shm, &shm_listener, &state->forward);
+	} else if (strcmp(interface, zwp_linux_dmabuf_v1_interface.name) == 0) {		
+		/* this instance is used just to get the format/modifier list,
+		 * in case the nested instance uses a version <= 3.
+		 * todo: figure out how to extract this if version >= 4 */
+		state->linux_dmabuf_at3 = wl_registry_bind(
+					registry, name, &zwp_linux_dmabuf_v1_interface, 3);
+		zwp_linux_dmabuf_v1_add_listener(state->linux_dmabuf_at3, &linux_dmabuf_at3_listener, &state->forward);
+
+		/* this instance is used to route forwarded requests/events through */
+		state->forward.linux_dmabuf = wl_registry_bind(
+					registry, name, &zwp_linux_dmabuf_v1_interface, version >= 4 ? 4 : version);
+		if (version >= 4) {
+			state->dmabuf_default_feedback = zwp_linux_dmabuf_v1_get_default_feedback(state->forward.linux_dmabuf);
+			zwp_linux_dmabuf_feedback_v1_add_listener(state->dmabuf_default_feedback, &dmabuf_feedback_listener, &state->forward);
+
+			memset(&state->forward.pending, 0, sizeof(state->forward.pending));
+			memset(&state->forward.current, 0, sizeof(state->forward.current));
+			state->forward.pending.table_fd = -1;
+			state->forward.current.table_fd = -1;
+		}
+
+	} else if (strcmp(interface, wl_drm_interface.name) == 0) {
+		state->forward.drm = wl_registry_bind(registry, name,
+				&wl_drm_interface, 2);
 	} else if (strcmp(interface, wl_seat_interface.name) == 0) {
 		struct wl_seat *seat = wl_registry_bind(
 				registry, name, &wl_seat_interface, 4);
@@ -364,6 +585,8 @@ static void handle_global(void *data, struct wl_registry *registry,
 		surface->output_global_name = name;
 		wl_output_add_listener(surface->output, &_wl_output_listener, surface);
 		wl_list_insert(&state->surfaces, &surface->link);
+		wl_list_init(&surface->nested_server_wl_output_resources);
+		wl_list_init(&surface->nested_server_xdg_output_resources);
 
 		if (state->run_display) {
 			create_surface(surface);
@@ -567,6 +790,7 @@ static int parse_options(int argc, char **argv, struct swaylock_state *state,
 		LO_TEXT_CAPS_LOCK_COLOR,
 		LO_TEXT_VER_COLOR,
 		LO_TEXT_WRONG_COLOR,
+		LO_PLUGIN_COMMAND,
 	};
 
 	static struct option long_options[] = {
@@ -623,6 +847,7 @@ static int parse_options(int argc, char **argv, struct swaylock_state *state,
 		{"text-caps-lock-color", required_argument, NULL, LO_TEXT_CAPS_LOCK_COLOR},
 		{"text-ver-color", required_argument, NULL, LO_TEXT_VER_COLOR},
 		{"text-wrong-color", required_argument, NULL, LO_TEXT_WRONG_COLOR},
+		{"command", required_argument, NULL, LO_PLUGIN_COMMAND},
 		{0, 0, 0, 0}
 	};
 
@@ -743,6 +968,8 @@ static int parse_options(int argc, char **argv, struct swaylock_state *state,
 			"Sets the color of the text when verifying.\n"
 		"  --text-wrong-color <color>       "
 			"Sets the color of the text when invalid.\n"
+		"  --command <cmd>       "
+			"Indicates which program to run to draw background.\n"
 		"\n"
 		"All <color> options are of the form <rrggbb[aa]>.\n";
 
@@ -1019,6 +1246,12 @@ static int parse_options(int argc, char **argv, struct swaylock_state *state,
 				state->args.colors.text.wrong = parse_color(optarg);
 			}
 			break;
+		case LO_PLUGIN_COMMAND:
+			if (state) {
+				free(state->args.plugin_command);
+				state->args.plugin_command = strdup(optarg);
+			}
+			break;
 		default:
 			fprintf(stderr, "%s", usage);
 			return 1;
@@ -1104,7 +1337,7 @@ static int load_config(char *path, struct swaylock_state *state,
 	return 0;
 }
 
-static struct swaylock_state state;
+static struct swaylock_state state = {0};
 
 static void display_in(int fd, short mask, void *data) {
 	if (wl_display_dispatch(state.display) == -1) {
@@ -1122,6 +1355,223 @@ static void comm_in(int fd, short mask, void *data) {
 		++state.failed_attempts;
 		damage_state(&state);
 	}
+}
+
+static void dispatch_nested(int fd, short mask, void *data) {
+	wl_event_loop_dispatch(state.server.loop, 0);
+}
+
+static void zxdg_output_destroy(struct wl_client *client, struct wl_resource *resource) {
+	wl_resource_destroy(resource);
+}
+static const struct zxdg_output_v1_interface zxdg_output_impl = {
+	.destroy = zxdg_output_destroy,
+};
+
+static const struct wl_output_interface wl_output_impl;
+static void xdg_output_manager_get_xdg_output(struct wl_client *client,
+		struct wl_resource *resource, uint32_t id, struct wl_resource *output) {
+	assert(wl_resource_instance_of(output, &wl_output_interface, &wl_output_impl));
+	struct swaylock_surface *surface = wl_resource_get_user_data(output);
+
+	struct wl_resource *output_resource =
+		wl_resource_create(client, &zxdg_output_v1_interface,
+			wl_resource_get_version(resource), id);
+	if (output_resource == NULL) {
+		wl_client_post_no_memory(client);
+		return;
+	}
+	wl_resource_set_implementation(output_resource, &zxdg_output_impl, surface, NULL);
+
+	wl_list_insert(&surface->nested_server_xdg_output_resources, wl_resource_get_link(output_resource));
+
+	zxdg_output_v1_send_logical_position(output_resource, 0, 0);
+	// todo: how should scale/etc affect this
+	zxdg_output_v1_send_logical_size(output_resource, surface->width, surface->height);
+	static int output_no = 0;
+	output_no++;
+	char tmp[32];
+	sprintf(tmp, "swaylock-%d", output_no);
+	zxdg_output_v1_send_name(output_resource, tmp);
+	zxdg_output_v1_send_done(output_resource);
+}
+static void xdg_output_manager_destroy(struct wl_client *client, struct wl_resource *resource) {
+	wl_resource_destroy(resource);
+}
+static const struct zxdg_output_manager_v1_interface xdg_output_manager_impl = {
+	.destroy = xdg_output_manager_destroy,
+	.get_xdg_output = xdg_output_manager_get_xdg_output,
+};
+static void bind_xdg_output_manager(struct wl_client *client, void *data,
+				    uint32_t version, uint32_t id) {
+	struct wl_resource *resource =
+			wl_resource_create(client, &zxdg_output_manager_v1_interface, version, id);
+	if (resource == NULL) {
+		wl_client_post_no_memory(client);
+		return;
+	}
+	wl_resource_set_implementation(resource, &xdg_output_manager_impl, NULL, NULL);
+}
+
+static void handle_wl_output_release(struct wl_client *client,
+		struct wl_resource *resource) {
+	wl_resource_destroy(resource);
+}
+
+static const struct wl_output_interface wl_output_impl = {
+	.release = handle_wl_output_release,
+};
+static void bind_wl_output(struct wl_client *client, void *data,
+			   uint32_t version, uint32_t id) {
+	struct swaylock_surface *surface = data;
+
+	struct wl_resource *resource =
+			wl_resource_create(client, &wl_output_interface, version, id);
+	if (resource == NULL) {
+		wl_client_post_no_memory(client);
+		return;
+	}
+	wl_resource_set_implementation(resource, &wl_output_impl, surface, NULL);
+
+	wl_list_insert(&surface->nested_server_wl_output_resources, wl_resource_get_link(resource));
+
+	// critically, each wl_output is only advertised when the swaylock_surface
+	// is first configured, since that is the size that we want to fill
+	wl_output_send_geometry(resource, 0, 0, 1 + WL_OUTPUT_MM_PER_PIX*surface->width,
+				1 + WL_OUTPUT_MM_PER_PIX*surface->height,
+				0, "swaylock","swaylock", WL_OUTPUT_TRANSFORM_NORMAL);
+	// todo: how should scale/etc affect this
+	wl_output_send_mode(resource, 0, surface->width, surface->height, 0);
+	wl_output_send_scale(resource, surface->scale);
+
+	if (version >= 4) {
+		static int output_no = 0;
+		output_no++;
+		char tmp[32];
+		sprintf(tmp, "swaylock-%d", output_no);
+		wl_output_send_name(resource, tmp);
+		wl_output_send_description(resource, "Generic output");
+	}
+	wl_output_send_done(resource);
+}
+
+
+static void zwlr_layer_surface_set_size(struct wl_client *client,
+		struct wl_resource *resource, uint32_t width, uint32_t height) {
+	/* ignore this, will send configure as needed */
+	/* or alternatively, check that width=height=0 is sent, if anything ?*/
+	if (width != 0 || height != 0) {
+		swaylock_log(LOG_ERROR, "Warning, layer surface client requesting specific size -- unlikely to be background type");
+		return;
+	}
+}
+static void zwlr_layer_surface_set_anchor(struct wl_client *client,
+		struct wl_resource *resource, uint32_t anchor) {
+	/* ignore this, will always fill the output */
+}
+static void zwlr_layer_surface_set_exclusive_zone(struct wl_client *client,
+		struct wl_resource *resource, int32_t zone) {
+	/* ignore this, there are no other clients */
+}
+static void zwlr_layer_surface_set_margin(struct wl_client *client,
+		struct wl_resource *resource,
+		int32_t top, int32_t right, int32_t bottom, int32_t left) {
+	/* ignore this, will always fill the output */
+}
+static void zwlr_layer_surface_set_keyboard_interactivity(struct wl_client *client,
+		struct wl_resource *resource, uint32_t keyboard_interactivity) {
+	/* ignore this, no input will be sent anyway */
+}
+static void zwlr_layer_surface_get_popup(struct wl_client *client,
+		struct wl_resource *resource, struct wl_resource *popup) {
+	/* should never be called, as no xdg_popup can be ever be created */
+}
+static void zwlr_layer_surface_ack_configure(struct wl_client *client,
+	struct wl_resource *resource, uint32_t serial) {
+	/* todo: validate serial sent to underlying surface, as a sanity check */
+
+	/* also need to figure out how to handle buffer size mismatches, if buffer
+	 * is sent without recent size guidance being acknowledged */
+}
+static void zwlr_layer_surface_destroy(struct wl_client *client,
+	struct wl_resource *resource) {
+	/* no resource to clean up */
+}
+
+static const struct zwlr_layer_surface_v1_interface layer_surface_impl = {
+	.set_size = zwlr_layer_surface_set_size,
+	.set_anchor = zwlr_layer_surface_set_anchor,
+	.set_exclusive_zone = zwlr_layer_surface_set_exclusive_zone,
+	.set_margin = zwlr_layer_surface_set_margin,
+	.set_keyboard_interactivity = zwlr_layer_surface_set_keyboard_interactivity,
+	.get_popup = zwlr_layer_surface_get_popup,
+	.ack_configure = zwlr_layer_surface_ack_configure,
+	.destroy = zwlr_layer_surface_destroy,
+};
+
+void wlr_layer_shell_get_layer_surface(struct wl_client *client,
+		struct wl_resource *resource, uint32_t id, struct wl_resource *surface,
+		struct wl_resource *output, uint32_t layer, const char *namespace) {
+	if (!output) {
+		swaylock_log(LOG_ERROR, "TODO: handle case where output is null -- pick next available output?\n");
+	}
+
+	assert(wl_resource_instance_of(output, &wl_output_interface, &wl_output_impl));
+	struct swaylock_surface *sw_surface = wl_resource_get_user_data(output);
+	struct forward_surface *surf= wl_resource_get_user_data(surface);
+
+	if (sw_surface->plugin_child) {
+		wl_client_post_implementation_error(client, "Tried to get a new layer surface for an output that already has one.");
+		return;
+	}
+	if (surf->sway_surface) {
+		wl_client_post_implementation_error(client, "Tried to get a new layer surface for a surface that already has one.");
+		return;
+	}
+	/* normal programs will only use the BACKGROUND layer, but there is no reason
+	 * not to force everything to work. */
+	(void)layer; // todo: validate this is in range
+	/* not important */
+	(void)namespace;
+
+	sw_surface->plugin_child = surf;
+	surf->sway_surface = sw_surface;
+
+	sw_surface->plugin_subsurface = wl_subcompositor_get_subsurface(
+			sw_surface->state->subcompositor,
+			surf->upstream, sw_surface->surface);
+	assert(sw_surface->plugin_subsurface);
+	wl_subsurface_set_sync(sw_surface->plugin_subsurface);
+	wl_subsurface_place_below(sw_surface->plugin_subsurface, sw_surface->child);
+	wl_subsurface_place_above(sw_surface->plugin_subsurface, sw_surface->surface);
+
+	// apply changes
+	wl_surface_commit(sw_surface->surface);
+
+	/* now, create the object that was asked for */
+	struct wl_resource *layer_surface_resource = wl_resource_create(client,
+		&zwlr_layer_surface_v1_interface, wl_resource_get_version(resource), id);
+	if (layer_surface_resource == NULL) {
+		wl_client_post_no_memory(client);
+		return;
+	}
+	wl_resource_set_implementation(layer_surface_resource, &layer_surface_impl, NULL, NULL);
+
+	surf->layer_surface = layer_surface_resource;
+}
+
+static const struct zwlr_layer_shell_v1_interface zwlr_layer_shell_v1_impl = {
+	.get_layer_surface = wlr_layer_shell_get_layer_surface,
+};
+
+static void bind_wlr_layer_shell(struct wl_client *client, void *data, uint32_t version, uint32_t id) {
+	struct wl_resource *resource =
+		wl_resource_create(client, &zwlr_layer_shell_v1_interface, version, id);
+	if (resource == NULL) {
+		wl_client_post_no_memory(client);
+		return;
+	}
+	wl_resource_set_implementation(resource, &zwlr_layer_shell_v1_impl, NULL, NULL);
 }
 
 int main(int argc, char **argv) {
@@ -1148,7 +1598,8 @@ int main(int argc, char **argv) {
 		.show_keyboard_layout = false,
 		.hide_keyboard_layout = false,
 		.show_failed_attempts = false,
-		.indicator_idle_visible = false
+		.indicator_idle_visible = false,
+		.plugin_command = NULL,
 	};
 	wl_list_init(&state.images);
 	set_default_colors(&state.args.colors);
@@ -1209,6 +1660,9 @@ int main(int argc, char **argv) {
 	struct wl_registry *registry = wl_display_get_registry(state.display);
 	wl_registry_add_listener(registry, &registry_listener, &state);
 	wl_display_roundtrip(state.display);
+	state.forward.upstream_display = state.display;
+	state.forward.upstream_registry = registry;
+	wl_list_init(&state.forward.feedback_instances);
 
 	if (!state.compositor || !state.shm) {
 		swaylock_log(LOG_ERROR, "Missing wl_compositor or wl_shm");
@@ -1249,11 +1703,79 @@ int main(int argc, char **argv) {
 		daemonize();
 	}
 
+	state.server.display = wl_display_create();
+
+	// Blind forwarding interfaces. TODO: cache data until needed, so
+	// as to avoid creating unused buffers or surfaces on the compositor.
+	// Also TODO: forwarding linux-dmabuf and (only the device part) of wl-drm
+	state.server.compositor = wl_global_create(state.server.display,
+		&wl_compositor_interface, 4, &state.forward, bind_wl_compositor);
+	state.server.shm = wl_global_create(state.server.display,
+		&wl_shm_interface, 1, &state.forward, bind_wl_shm);
+	if (state.forward.drm) {
+		state.server.drm = wl_global_create(state.server.display,
+			&wl_drm_interface, 2, &state.forward, bind_drm);
+	}
+	if (state.forward.linux_dmabuf) {
+		uint32_t version = zwp_linux_dmabuf_v1_get_version(state.forward.linux_dmabuf);
+		state.server.zwp_linux_dmabuf = wl_global_create(state.server.display,
+			&zwp_linux_dmabuf_v1_interface, version, &state.forward, bind_linux_dmabuf);
+	}
+
+	// Fortunately, the _interface_ structs are identical between
+	// wayland-client and wayland-server
+	state.server.wlr_layer_shell = wl_global_create(state.server.display,
+		&zwlr_layer_shell_v1_interface, 1, NULL, bind_wlr_layer_shell);
+	state.server.xdg_output_manager = wl_global_create(state.server.display,
+		&zxdg_output_manager_v1_interface, 2, NULL, bind_xdg_output_manager);
+
+	// TODO: figure out how to implement wl_output reporting and all that
+
+	state.server.loop = wl_display_get_event_loop(state.server.display);
+
+
+	int sockpair[2];
+	if (socketpair(AF_UNIX, SOCK_STREAM, 0, sockpair) == -1) {
+		swaylock_log(LOG_ERROR, "Failed to create socket pair for background plugin");
+		return EXIT_FAILURE;
+	}
+	// single fork-exec; we don't want the plugin to outlive us
+	if (state.args.plugin_command) {
+		pid_t pid = fork();
+		if (pid == 0) {
+			close(sockpair[1]);
+
+			fprintf(stderr, "Forked background plugin: %d\n", getpid());
+			char wayland_socket_str[16];
+			snprintf(wayland_socket_str, sizeof(wayland_socket_str),
+					"%d", sockpair[0]);
+			setenv("WAYLAND_SOCKET", wayland_socket_str, true);
+			unsetenv("WAYLAND_DISPLAY");
+			// this avoids confusion between debug logs; alas, the default
+			// debug log does not distinguish programs :-(
+			unsetenv("WAYLAND_DEBUG");
+
+			execlp("sh", "sh", "-c", state.args.plugin_command, NULL);
+			swaylock_log(LOG_ERROR, "Failed to execlp");
+			return EXIT_FAILURE;
+		} else if (pid == -1) {
+			swaylock_log(LOG_ERROR, "Failed to forkspawn background plugin");
+			return EXIT_FAILURE;
+		}
+		close(sockpair[0]);
+		state.server.surf_client = wl_client_create(state.server.display, sockpair[1]);
+	}
+	// TODO: close-and-reboot hook
+
+
 	state.eventloop = loop_create();
 	loop_add_fd(state.eventloop, wl_display_get_fd(state.display), POLLIN,
 			display_in, NULL);
 
 	loop_add_fd(state.eventloop, get_comm_reply_fd(), POLLIN, comm_in, NULL);
+
+	loop_add_fd(state.eventloop, wl_event_loop_get_fd(state.server.loop),
+		POLLIN, dispatch_nested, NULL);
 
 	state.run_display = true;
 	while (state.run_display) {
@@ -1261,6 +1783,8 @@ int main(int argc, char **argv) {
 		if (wl_display_flush(state.display) == -1 && errno != EAGAIN) {
 			break;
 		}
+		wl_display_flush_clients(state.server.display);
+
 		loop_poll(state.eventloop);
 	}
 

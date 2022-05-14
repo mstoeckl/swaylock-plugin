@@ -5,6 +5,7 @@
 #include <fcntl.h>
 #include <getopt.h>
 #include <poll.h>
+#include <signal.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -631,6 +632,12 @@ static const struct wl_registry_listener registry_listener = {
 	.global = handle_global,
 	.global_remove = handle_global_remove,
 };
+
+static int sigusr_fds[2] = {-1, -1};
+
+void do_sigusr(int sig) {
+	(void)write(sigusr_fds[1], "1", 1);
+}
 
 static cairo_surface_t *select_image(struct swaylock_state *state,
 		struct swaylock_surface *surface) {
@@ -1679,6 +1686,10 @@ static void client_destroyed(struct wl_listener *listener, void *data) {
 	run_plugin_command(state);
 }
 
+static void term_in(int fd, short mask, void *data) {
+	state.run_display = false;
+}
+
 int main(int argc, char **argv) {
 	swaylock_log_init(LOG_ERROR);
 	initialize_pw_backend(argc, argv);
@@ -1749,6 +1760,11 @@ int main(int argc, char **argv) {
 	state.password.buffer = password_buffer_create(state.password.buffer_len);
 	if (!state.password.buffer) {
 		return EXIT_FAILURE;
+	}
+
+	if (pipe(sigusr_fds) != 0) {
+		swaylock_log(LOG_ERROR, "Failed to pipe");
+		return 1;
 	}
 
 	wl_list_init(&state.surfaces);
@@ -1917,6 +1933,9 @@ int main(int argc, char **argv) {
 
 	loop_add_fd(state.eventloop, wl_event_loop_get_fd(state.server.loop),
 		POLLIN, dispatch_nested, NULL);
+
+	loop_add_fd(state.eventloop, sigusr_fds[0], POLLIN, term_in, NULL);
+	signal(SIGUSR1, do_sigusr);
 
 	state.run_display = true;
 	while (state.run_display) {

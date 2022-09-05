@@ -1,28 +1,24 @@
-# swaylock
+# swaylock-plugin
 
-swaylock is a screen locking utility for Wayland compositors. It is compatible
-with any Wayland compositor which implements one of the following Wayland
-protocols:
+This is a fork of [`swaylock`](https://github.com/swaywm/waylock), a screen
+locking utility for Wayland compositors. With it, instead of displaying a fixed image or color on the screen, you can display the animated output from any wallpaper program that implements the `wlr-layer-shell-unstable-v1` protocol. All you have to do is run `swaylock --command 'my-wallpaper --flags'`, where `my-wallpaper`
+is replaced by your desired program. Programs which are known to work include:
 
-- ext-session-lock-v1, or
-- wlr-layer-shell and wlr-input-inhibitor
+* [`swaybg`](https://github.com/swaywm/swaybg), which displays regular background images
+* [`mpvpaper`](https://github.com/GhostNaN/mpvpaper), which lets you play videos
+* [`glpaper`](https://hg.sr.ht/~scoopta/glpaper), for custom shaders
+* [`rwalkbg`](https://git.sr.ht/~mstoeckl/rwalkbg), a very slow animation
+* [`wscreensaver`](https://git.sr.ht/~mstoeckl/wscreensaver), an experiment in porting a few xscreensaver hacks to Wayland
+
+It is compatible with Wayland compositors that implement the `ext-session-lock-v1`
+protocol.
 
 See the man page, `swaylock(1)`, for instructions on using swaylock.
 
-## Release Signatures
-
-Releases are signed with [E88F5E48](https://keys.openpgp.org/search?q=34FF9526CFEF0E97A340E2E40FDE7BE0E88F5E48)
-and published [on GitHub](https://github.com/swaywm/swaylock/releases). swaylock
-releases are managed independently of sway releases.
+This is experimental software, so if something fails to work it's probably a bug
+in this program -- report it at https://github.com/mstoeckl/swaylock-plugin .
 
 ## Installation
-
-### From Packages
-
-Swaylock is available in many distributions. Try installing the "swaylock"
-package for yours.
-
-### Compiling from Source
 
 Install dependencies:
 
@@ -31,13 +27,12 @@ Install dependencies:
 * wayland-protocols \*
 * libxkbcommon
 * cairo
-* gdk-pixbuf2 \*\*
+* gdk-pixbuf2
 * pam (optional)
 * [scdoc](https://git.sr.ht/~sircmpwn/scdoc) (optional: man pages) \*
 * git \*
 
 _\* Compile-time dep_  
-_\*\* Optional: required for background images other than PNG_
 
 Run these commands:
 

@@ -95,6 +95,13 @@ struct dmabuf_modifier_pair {
     uint32_t modifier_lo;
 };
 
+struct feedback_pair {
+    uint32_t format;
+    uint32_t unused_padding;
+    uint32_t modifier_hi;
+    uint32_t modifier_lo;
+};
+
 struct feedback_tranche  {
     dev_t tranche_device;
     struct wl_array indices;
@@ -156,8 +163,7 @@ struct swaylock_state {
 	struct wl_subcompositor *subcompositor;
 	struct zwlr_layer_shell_v1 *layer_shell;
 	struct zwlr_input_inhibit_manager_v1 *input_inhibit_manager;
-	struct wl_shm *shm;
-    struct zwp_linux_dmabuf_v1 *linux_dmabuf_at3;
+    struct wl_shm *shm;
     struct zwp_linux_dmabuf_feedback_v1 *dmabuf_default_feedback;
 	struct wl_list surfaces;
 	struct wl_list images;

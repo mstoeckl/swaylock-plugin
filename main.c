@@ -423,12 +423,10 @@ static void linux_dmabuf_handle_modifier(void *data, struct zwp_linux_dmabuf_v1 
 	}
 }
 
-static const struct zwp_linux_dmabuf_v1_listener linux_dmabuf_at3_listener = {
+static const struct zwp_linux_dmabuf_v1_listener linux_dmabuf_listener = {
 	.format = linux_dmabuf_handle_format,
 	.modifier = linux_dmabuf_handle_modifier,
 };
-
-
 
 static void dmabuf_feedback_done(void *data,
 		struct zwp_linux_dmabuf_feedback_v1 *zwp_linux_dmabuf_feedback_v1) {
@@ -539,17 +537,13 @@ static void handle_global(void *data, struct wl_registry *registry,
 				&wl_shm_interface, 1);
 		state->forward.shm = state->shm;
 		wl_shm_add_listener(state->shm, &shm_listener, &state->forward);
-	} else if (strcmp(interface, zwp_linux_dmabuf_v1_interface.name) == 0) {		
-		/* this instance is used just to get the format/modifier list,
-		 * in case the nested instance uses a version <= 3.
-		 * todo: figure out how to extract this if version >= 4 */
-		state->linux_dmabuf_at3 = wl_registry_bind(
-					registry, name, &zwp_linux_dmabuf_v1_interface, 3);
-		zwp_linux_dmabuf_v1_add_listener(state->linux_dmabuf_at3, &linux_dmabuf_at3_listener, &state->forward);
+	} else if (strcmp(interface, zwp_linux_dmabuf_v1_interface.name) == 0 && version >= 3) {
+		/* ^^ version >= 3 is needed to acquire the modifier list in some form */
 
 		/* this instance is used to route forwarded requests/events through */
 		state->forward.linux_dmabuf = wl_registry_bind(
 					registry, name, &zwp_linux_dmabuf_v1_interface, version >= 4 ? 4 : version);
+		zwp_linux_dmabuf_v1_add_listener(state->forward.linux_dmabuf, &linux_dmabuf_listener, &state->forward);
 		if (version >= 4) {
 			state->dmabuf_default_feedback = zwp_linux_dmabuf_v1_get_default_feedback(state->forward.linux_dmabuf);
 			zwp_linux_dmabuf_feedback_v1_add_listener(state->dmabuf_default_feedback, &dmabuf_feedback_listener, &state->forward);
@@ -559,7 +553,6 @@ static void handle_global(void *data, struct wl_registry *registry,
 			state->forward.pending.table_fd = -1;
 			state->forward.current.table_fd = -1;
 		}
-
 	} else if (strcmp(interface, wl_drm_interface.name) == 0) {
 		state->forward.drm = wl_registry_bind(registry, name,
 				&wl_drm_interface, 2);
@@ -1704,6 +1697,37 @@ int main(int argc, char **argv) {
 	}
 
 	state.server.display = wl_display_create();
+
+	/* fill in dmabuf modifier list if empty and upstream provided dmabuf-feedback */
+	if (zwp_linux_dmabuf_v1_get_version(state.forward.linux_dmabuf) >= 4) {
+		size_t npairs = 0;
+		for (size_t i = 0; i < state.forward.current.tranches_len; i++) {
+			npairs += state.forward.current.tranches[i].indices.size;
+		}
+		free(state.forward.dmabuf_formats);
+		state.forward.dmabuf_formats = calloc(npairs, sizeof(struct dmabuf_modifier_pair));
+
+		void *table = mmap(NULL, state.forward.current.table_fd_size, PROT_READ, MAP_PRIVATE,  state.forward.current.table_fd, 0);
+		if (table == MAP_FAILED) {
+			swaylock_log(LOG_ERROR, "Failed to map dmabuf feedback table");
+			return 1;
+		}
+		struct feedback_pair *table_data = table;
+		size_t j = 0;
+		for (size_t i = 0; i < state.forward.current.tranches_len; i++) {
+			const struct wl_array *indices = &state.forward.current.tranches[i].indices;
+			for (size_t k = 0; k < indices->size / 2; k++) {
+				uint16_t index = ((uint16_t*)indices->data)[k];
+				state.forward.dmabuf_formats[j].format = table_data[index].format;
+				state.forward.dmabuf_formats[j].modifier_hi = table_data[index].modifier_hi;
+				state.forward.dmabuf_formats[j].modifier_lo = table_data[index].modifier_lo;
+				j++;
+			}
+		}
+		state.forward.dmabuf_formats_len = j;
+		munmap(table, state.forward.current.table_fd_size);
+		// todo: sort & deduplicate table?
+	}
 
 	// Blind forwarding interfaces. TODO: cache data until needed, so
 	// as to avoid creating unused buffers or surfaces on the compositor.

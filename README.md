@@ -7,6 +7,7 @@ is replaced by your desired program. Programs which are known to work include:
 * [`swaybg`](https://github.com/swaywm/swaybg), which displays regular background images
 * [`mpvpaper`](https://github.com/GhostNaN/mpvpaper), which lets you play videos
 * [`glpaper`](https://hg.sr.ht/~scoopta/glpaper), for custom shaders
+* [`shaderbg`](https://git.sr.ht/~mstoeckl/shaderbg), also renders OpenGL shaders
 * [`rwalkbg`](https://git.sr.ht/~mstoeckl/rwalkbg), a very slow animation
 * [`wscreensaver`](https://git.sr.ht/~mstoeckl/wscreensaver), an experiment in porting a few xscreensaver hacks to Wayland
 

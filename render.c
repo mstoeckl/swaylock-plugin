@@ -52,16 +52,13 @@ void render_frame_background(struct swaylock_surface *surface) {
 
 	cairo_save(cairo);
 	cairo_set_operator(cairo, CAIRO_OPERATOR_SOURCE);
-	uint32_t bg_fill_color = 0xff00ff40;
-	cairo_set_source_u32(cairo, bg_fill_color);
-
-//	cairo_set_source_u32(cairo, state->args.colors.background);
+	cairo_set_source_u32(cairo, state->args.colors.background);
 	cairo_paint(cairo);
-//	if (surface->image && state->args.mode != BACKGROUND_MODE_SOLID_COLOR) {
-//		cairo_set_operator(cairo, CAIRO_OPERATOR_OVER);
-//		render_background_image(cairo, surface->image,
-//			state->args.mode, buffer_width, buffer_height);
-//	}
+	if (surface->image && state->args.mode != BACKGROUND_MODE_SOLID_COLOR) {
+		cairo_set_operator(cairo, CAIRO_OPERATOR_OVER);
+		render_background_image(cairo, surface->image,
+			state->args.mode, buffer_width, buffer_height);
+	}
 	cairo_restore(cairo);
 	cairo_identity_matrix(cairo);
 

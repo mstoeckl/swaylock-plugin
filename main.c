@@ -355,6 +355,7 @@ static void handle_wl_output_scale(void *data, struct wl_output *output,
 static void handle_wl_output_name(void *data, struct wl_output *output,
 		const char *name) {
 	struct swaylock_surface *surface = data;
+	free(surface->output_name);
 	surface->output_name = strdup(name);
 }
 
@@ -580,6 +581,12 @@ static void handle_global(void *data, struct wl_registry *registry,
 		wl_list_insert(&state->surfaces, &surface->link);
 		wl_list_init(&surface->nested_server_wl_output_resources);
 		wl_list_init(&surface->nested_server_xdg_output_resources);
+
+		static int output_no = 0;
+		output_no++;
+		char tmp[32];
+		sprintf(tmp, "swaylock-%d", output_no);
+		surface->output_name = strdup(tmp);
 
 		if (state->run_display) {
 			create_surface(surface);
@@ -1381,11 +1388,7 @@ static void xdg_output_manager_get_xdg_output(struct wl_client *client,
 	zxdg_output_v1_send_logical_position(output_resource, 0, 0);
 	// todo: how should scale/etc affect this
 	zxdg_output_v1_send_logical_size(output_resource, surface->width, surface->height);
-	static int output_no = 0;
-	output_no++;
-	char tmp[32];
-	sprintf(tmp, "swaylock-%d", output_no);
-	zxdg_output_v1_send_name(output_resource, tmp);
+	zxdg_output_v1_send_name(output_resource, surface->output_name);
 	zxdg_output_v1_send_done(output_resource);
 }
 static void xdg_output_manager_destroy(struct wl_client *client, struct wl_resource *resource) {
@@ -1438,11 +1441,7 @@ static void bind_wl_output(struct wl_client *client, void *data,
 	wl_output_send_scale(resource, surface->scale);
 
 	if (version >= 4) {
-		static int output_no = 0;
-		output_no++;
-		char tmp[32];
-		sprintf(tmp, "swaylock-%d", output_no);
-		wl_output_send_name(resource, tmp);
+		wl_output_send_name(resource, surface->output_name);
 		wl_output_send_description(resource, "Generic output");
 	}
 	wl_output_send_done(resource);

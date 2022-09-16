@@ -77,9 +77,9 @@ struct swaylock_password {
 
 // for the plugin-based surface drawing
 struct swaylock_bg_server {
-    struct wl_display *display;
+	struct wl_display *display;
 	struct wl_event_loop *loop;
-    struct wl_global *wlr_layer_shell;
+	struct wl_global *wlr_layer_shell;
 	struct wl_global *compositor;
 	struct wl_global *shm;
 	struct wl_global *xdg_output_manager;
@@ -90,44 +90,44 @@ struct swaylock_bg_server {
 };
 
 struct dmabuf_modifier_pair {
-    uint32_t format;
-    uint32_t modifier_hi;
-    uint32_t modifier_lo;
+	uint32_t format;
+	uint32_t modifier_hi;
+	uint32_t modifier_lo;
 };
 
 struct feedback_pair {
-    uint32_t format;
-    uint32_t unused_padding;
-    uint32_t modifier_hi;
-    uint32_t modifier_lo;
+	uint32_t format;
+	uint32_t unused_padding;
+	uint32_t modifier_hi;
+	uint32_t modifier_lo;
 };
 
 struct feedback_tranche  {
-    dev_t tranche_device;
-    struct wl_array indices;
-    uint32_t flags;
+	dev_t tranche_device;
+	struct wl_array indices;
+	uint32_t flags;
 };
 struct dmabuf_feedback_state  {
-    dev_t main_device;
-    int table_fd;
-    int table_fd_size;
-    struct feedback_tranche *tranches;
-    size_t tranches_len;
+	dev_t main_device;
+	int table_fd;
+	int table_fd_size;
+	struct feedback_tranche *tranches;
+	size_t tranches_len;
 };
 
 // todo: merge with swaylock_bg_server ?
 struct forward_state {
 	/* these pointers are copies of those in swaylock_state */
-    struct wl_display *upstream_display;
-    struct wl_registry *upstream_registry;
+	struct wl_display *upstream_display;
+	struct wl_registry *upstream_registry;
 
 	struct wl_drm *drm;
 	struct wl_shm *shm;
-    /* this instance is used just for forwarding */
-    struct zwp_linux_dmabuf_v1 *linux_dmabuf;
-    /* list of wl_resources corresponding to (default/surface) feedback instances
-     * that should get updated when the upstream feedback is updated */
-    struct wl_list feedback_instances;
+	/* this instance is used just for forwarding */
+	struct zwp_linux_dmabuf_v1 *linux_dmabuf;
+	/* list of wl_resources corresponding to (default/surface) feedback instances
+	 * that should get updated when the upstream feedback is updated */
+	struct wl_list feedback_instances;
 	/* We only let the background generator create surfaces, but not
 	 * subsurfaces, because those are much trickier to implement correctly,
 	 * and a well designed background shouldn't need them anyway. */
@@ -136,35 +136,35 @@ struct forward_state {
 	uint32_t *shm_formats;
 	uint32_t shm_formats_len;
 
-    struct dmabuf_modifier_pair *dmabuf_formats;
-    uint32_t dmabuf_formats_len;
+	struct dmabuf_modifier_pair *dmabuf_formats;
+	uint32_t dmabuf_formats_len;
 
-    struct dmabuf_feedback_state current, pending;
-    struct feedback_tranche pending_tranche;
+	struct dmabuf_feedback_state current, pending;
+	struct feedback_tranche pending_tranche;
 };
 
 /* this is a resource associated to a downstream wl_surface */
 struct forward_surface {
-    struct wl_surface *upstream;
+	struct wl_surface *upstream;
 
-    bool has_been_configured;
-    struct wl_resource *layer_surface; // downstream only
+	bool has_been_configured;
+	struct wl_resource *layer_surface; // downstream only
 
-    /* is null until get_layer_surface is called and initializes this */
-    struct swaylock_surface *sway_surface;
+	/* is null until get_layer_surface is called and initializes this */
+	struct swaylock_surface *sway_surface;
 };
 
 struct swaylock_state {
 	struct loop *eventloop;
 	struct loop_timer *clear_indicator_timer; // clears the indicator
 	struct loop_timer *clear_password_timer;  // clears the password buffer
-    struct wl_display *display;
+	struct wl_display *display;
 	struct wl_compositor *compositor;
 	struct wl_subcompositor *subcompositor;
 	struct zwlr_layer_shell_v1 *layer_shell;
 	struct zwlr_input_inhibit_manager_v1 *input_inhibit_manager;
-    struct wl_shm *shm;
-    struct zwp_linux_dmabuf_feedback_v1 *dmabuf_default_feedback;
+	struct wl_shm *shm;
+	struct zwp_linux_dmabuf_feedback_v1 *dmabuf_default_feedback;
 	struct wl_list surfaces;
 	struct wl_list images;
 	struct swaylock_args args;
@@ -190,7 +190,7 @@ struct swaylock_surface {
 	struct wl_subsurface *subsurface;
 	// rendered by plugin, unsynchronized, placed between surface + child
 	struct wl_subsurface *plugin_subsurface;
-    struct forward_surface *plugin_child;
+	struct forward_surface *plugin_child;
 	struct zwlr_layer_surface_v1 *layer_surface;
 	struct ext_session_lock_surface_v1 *ext_session_lock_surface_v1;
 	struct pool_buffer buffers[2];
@@ -202,6 +202,7 @@ struct swaylock_surface {
 	int32_t scale;
 	enum wl_output_subpixel subpixel;
 	char *output_name;
+	char *output_description;
 	struct wl_list link;
 
 	struct wl_global *nested_server_output;

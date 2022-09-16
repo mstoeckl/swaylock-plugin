@@ -361,7 +361,9 @@ static void handle_wl_output_name(void *data, struct wl_output *output,
 
 static void handle_wl_output_description(void *data, struct wl_output *output,
 		const char *description) {
-	// Who cares
+	struct swaylock_surface *surface = data;
+	free(surface->output_description);
+	surface->output_description = strdup(description);
 }
 
 struct wl_output_listener _wl_output_listener = {
@@ -587,6 +589,7 @@ static void handle_global(void *data, struct wl_registry *registry,
 		char tmp[32];
 		sprintf(tmp, "swaylock-%d", output_no);
 		surface->output_name = strdup(tmp);
+		surface->output_description = strdup("Generic output");
 
 		if (state->run_display) {
 			create_surface(surface);
@@ -1389,6 +1392,7 @@ static void xdg_output_manager_get_xdg_output(struct wl_client *client,
 	// todo: how should scale/etc affect this
 	zxdg_output_v1_send_logical_size(output_resource, surface->width, surface->height);
 	zxdg_output_v1_send_name(output_resource, surface->output_name);
+	zxdg_output_v1_send_description(output_resource, surface->output_description);
 	zxdg_output_v1_send_done(output_resource);
 }
 static void xdg_output_manager_destroy(struct wl_client *client, struct wl_resource *resource) {
@@ -1442,7 +1446,7 @@ static void bind_wl_output(struct wl_client *client, void *data,
 
 	if (version >= 4) {
 		wl_output_send_name(resource, surface->output_name);
-		wl_output_send_description(resource, "Generic output");
+		wl_output_send_description(resource, surface->output_description);
 	}
 	wl_output_send_done(resource);
 }

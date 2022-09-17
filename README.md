@@ -32,6 +32,7 @@ Install dependencies:
 * pam (optional)
 * [scdoc](https://git.sr.ht/~sircmpwn/scdoc) (optional: man pages) \*
 * git \*
+* swaybg
 
 _\* Compile-time dep_  
 

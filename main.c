@@ -117,10 +117,6 @@ static void destroy_surface(struct swaylock_surface *surface) {
 	if (surface->surface != NULL) {
 		wl_surface_destroy(surface->surface);
 	}
-	if (surface->plugin_child) {
-		/* detach this */
-		surface->plugin_child->sway_surface = NULL;
-	}
 	destroy_buffer(&surface->buffers[0]);
 	destroy_buffer(&surface->buffers[1]);
 	destroy_buffer(&surface->indicator_buffers[0]);
@@ -182,12 +178,11 @@ static void create_surface(struct swaylock_surface *surface) {
 	if (surface_is_opaque(surface) &&
 			surface->state->args.mode != BACKGROUND_MODE_CENTER &&
 			surface->state->args.mode != BACKGROUND_MODE_FIT) {
-//		struct wl_region *region =
-//			wl_compositor_create_region(surface->state->compositor);
-//		wl_region_add(region, 0, 0, INT32_MAX, INT32_MAX);
-//		wl_surface_set_opaque_region(surface->surface, region);
-//		wl_region_destroy(region);
-		// TODO: reenable if still valid
+		struct wl_region *region =
+			wl_compositor_create_region(surface->state->compositor);
+		wl_region_add(region, 0, 0, INT32_MAX, INT32_MAX);
+		wl_surface_set_opaque_region(surface->surface, region);
+		wl_region_destroy(region);
 	}
 
 	if (!state->ext_session_lock_v1) {
@@ -195,12 +190,14 @@ static void create_surface(struct swaylock_surface *surface) {
 	}
 }
 
-static void forward_confgure(struct swaylock_surface *surface, bool first_configure) {
+static void forward_configure(struct swaylock_surface *surface, bool first_configure, uint32_t serial) {
 	if (first_configure && (surface->width > 0 && surface->height > 0)) {
 		// delay output creation until we know exactly what layer
 		// surface size we are provided with.
 		wl_global_create(surface->state->server.display,
 			&wl_output_interface, WL_OUTPUT_VERSION, surface, bind_wl_output);
+
+		surface->first_configure_serial = serial;
 	} else if (surface->width > 0 && surface->height > 0) {
 		struct wl_resource *output;
 		wl_resource_for_each(output, &surface->nested_server_wl_output_resources) {
@@ -216,15 +213,16 @@ static void forward_confgure(struct swaylock_surface *surface, bool first_config
 			zxdg_output_v1_send_logical_size(xdg_output, surface->width, surface->height);
 			zxdg_output_v1_send_done(xdg_output);
 		}
-		if (surface->plugin_child) {
+		if (surface->plugin_surface) {
 			/* reconfigure plugin surface with new size */
-			if (surface->plugin_child->has_been_configured) {
+			if (surface->plugin_surface->has_been_configured) {
 				/* wait until the first commit/configure cycle is over */
-				uint32_t serial = wl_display_next_serial(wl_client_get_display(wl_resource_get_client(surface->plugin_child->layer_surface)));
-				zwlr_layer_surface_v1_send_configure(surface->plugin_child->layer_surface,
-								     serial,
+				struct wl_display *plugin_display = surface->state->server.display;
+				uint32_t plugin_serial = wl_display_next_serial(plugin_display);
+				add_serial_pair(surface->plugin_surface, serial, plugin_serial);
+				zwlr_layer_surface_v1_send_configure(surface->plugin_surface->layer_surface,
+								     plugin_serial,
 					surface->width, surface->height);
-
 			}
 		}
 	}
@@ -240,9 +238,11 @@ static void layer_surface_configure(void *data,
 	surface->indicator_width = 0;
 	surface->indicator_height = 0;
 	zwlr_layer_surface_v1_ack_configure(layer_surface, serial);
-	forward_confgure(surface, first_configure);
-	render_frame_background(surface);
-	render_frame(surface);
+	forward_configure(surface, first_configure, serial);
+//	render_frame_background(surface);
+	if (surface->has_buffer) {
+		render_frame(surface);
+	}
 }
 
 static void layer_surface_closed(void *data,
@@ -265,10 +265,21 @@ static void ext_session_lock_surface_v1_handle_configure(void *data,
 	surface->height = height;
 	surface->indicator_width = 0;
 	surface->indicator_height = 0;
-	ext_session_lock_surface_v1_ack_configure(lock_surface, serial);
-	forward_confgure(surface, first_configure);
-	render_frame_background(surface);
-	render_frame(surface);
+	/* Quoting the spec:
+	 *	Sending an ack_configure request consumes the configure event
+	 *	referenced by the given serial, as well as all older configure
+	 *	events sent on this object.
+	 *
+	 * wlr-layer-shell and xdg-shell do not have equivalent language.
+	 *
+	 * This makes mixing client vs plugin rendering tricky.
+	 *
+	 */
+	forward_configure(surface, first_configure, serial);
+//	render_frame_background(surface);
+	if (surface->has_buffer) {
+		render_frame(surface);
+	}
 }
 
 static const struct ext_session_lock_surface_v1_listener ext_session_lock_surface_v1_listener = {
@@ -290,7 +301,9 @@ static void surface_frame_handle_done(void *data, struct wl_callback *callback,
 		wl_callback_add_listener(callback, &surface_frame_listener, surface);
 		surface->frame_pending = true;
 
-		render_frame(surface);
+		if (surface->has_buffer) {
+			render_frame(surface);
+		}
 		surface->dirty = false;
 	}
 }
@@ -310,10 +323,12 @@ void damage_surface(struct swaylock_surface *surface) {
 		return;
 	}
 
-	struct wl_callback *callback = wl_surface_frame(surface->surface);
-	wl_callback_add_listener(callback, &surface_frame_listener, surface);
-	surface->frame_pending = true;
-	wl_surface_commit(surface->surface);
+	if (surface->has_buffer) {
+		struct wl_callback *callback = wl_surface_frame(surface->surface);
+		wl_callback_add_listener(callback, &surface_frame_listener, surface);
+		surface->frame_pending = true;
+		wl_surface_commit(surface->surface);
+	}
 }
 
 void damage_state(struct swaylock_state *state) {
@@ -1421,6 +1436,11 @@ static void handle_wl_output_release(struct wl_client *client,
 static const struct wl_output_interface wl_output_impl = {
 	.release = handle_wl_output_release,
 };
+
+static void wl_output_handle_destroy(struct wl_resource *resource) {
+	// remove output from the list of objects
+	wl_list_remove(wl_resource_get_link(resource));
+}
 static void bind_wl_output(struct wl_client *client, void *data,
 			   uint32_t version, uint32_t id) {
 	struct swaylock_surface *surface = data;
@@ -1431,7 +1451,7 @@ static void bind_wl_output(struct wl_client *client, void *data,
 		wl_client_post_no_memory(client);
 		return;
 	}
-	wl_resource_set_implementation(resource, &wl_output_impl, surface, NULL);
+	wl_resource_set_implementation(resource, &wl_output_impl, surface, wl_output_handle_destroy);
 
 	wl_list_insert(&surface->nested_server_wl_output_resources, wl_resource_get_link(resource));
 
@@ -1485,9 +1505,54 @@ static void zwlr_layer_surface_get_popup(struct wl_client *client,
 static void zwlr_layer_surface_ack_configure(struct wl_client *client,
 	struct wl_resource *resource, uint32_t serial) {
 	/* todo: validate serial sent to underlying surface, as a sanity check */
+	struct swaylock_surface *surface = wl_resource_get_user_data(resource);
+
+	struct forward_surface *plugin_surf = surface->plugin_surface;
+
+	if (serial == plugin_surf->last_used_plugin_serial) {
+		/* Repeated ack_configures with the same serial can be dropped;
+		 * Furthermore, if the upstream uses ext_session_lock_surface,
+		 * calling ack_configure twice with the same serial is an error. */
+		return;
+	}
+	plugin_surf->last_used_plugin_serial = serial;
+
+	uint32_t upstream_serial = -1;
+	bool found_serial = false;
+	for (size_t i = 0; i < plugin_surf->serial_table_len; i++) {
+		// fprintf(stderr, "serial check (%zu): %u -> %u =? %u\n", i, plugin_surf->serial_table[i].upstream_serial,
+		//	plugin_surf->serial_table[i].plugin_serial, serial);
+		if (plugin_surf->serial_table[i].plugin_serial == serial) {
+			upstream_serial = plugin_surf->serial_table[i].upstream_serial;
+			found_serial = true;
+
+			/* once a serial is used, discard both it and serials older than it */
+			memmove(plugin_surf->serial_table, plugin_surf->serial_table + (i + 1),
+				(plugin_surf->serial_table_len - (i + 1))
+					* sizeof(struct serial_pair) );
+			plugin_surf->serial_table_len -= (i+1);
+
+			break;
+		}
+	}
+	if (!found_serial) {
+		// todo: get right message
+		wl_client_post_implementation_error(client, "used ack configure with invalid serial");
+		return;
+	}
+
+
+	// todo: read the surface's serial table
+	// also, when a serial is used, prune all older serials
 
 	/* also need to figure out how to handle buffer size mismatches, if buffer
 	 * is sent without recent size guidance being acknowledged */
+
+	if (surface->ext_session_lock_surface_v1) {
+		ext_session_lock_surface_v1_ack_configure(surface->ext_session_lock_surface_v1, upstream_serial);
+	} else if (surface->layer_surface) {
+		zwlr_layer_surface_v1_ack_configure(surface->layer_surface, upstream_serial);
+	}
 }
 static void zwlr_layer_surface_destroy(struct wl_client *client,
 	struct wl_resource *resource) {
@@ -1516,7 +1581,7 @@ void wlr_layer_shell_get_layer_surface(struct wl_client *client,
 	struct swaylock_surface *sw_surface = wl_resource_get_user_data(output);
 	struct forward_surface *surf= wl_resource_get_user_data(surface);
 
-	if (sw_surface->plugin_child) {
+	if (sw_surface->plugin_surface) {
 		wl_client_post_implementation_error(client, "Tried to get a new layer surface for an output that already has one.");
 		return;
 	}
@@ -1530,19 +1595,8 @@ void wlr_layer_shell_get_layer_surface(struct wl_client *client,
 	/* not important */
 	(void)namespace;
 
-	sw_surface->plugin_child = surf;
+	sw_surface->plugin_surface = surf;
 	surf->sway_surface = sw_surface;
-
-	sw_surface->plugin_subsurface = wl_subcompositor_get_subsurface(
-			sw_surface->state->subcompositor,
-			surf->upstream, sw_surface->surface);
-	assert(sw_surface->plugin_subsurface);
-	wl_subsurface_set_sync(sw_surface->plugin_subsurface);
-	wl_subsurface_place_below(sw_surface->plugin_subsurface, sw_surface->child);
-	wl_subsurface_place_above(sw_surface->plugin_subsurface, sw_surface->surface);
-
-	// apply changes
-	wl_surface_commit(sw_surface->surface);
 
 	/* now, create the object that was asked for */
 	struct wl_resource *layer_surface_resource = wl_resource_create(client,
@@ -1551,9 +1605,11 @@ void wlr_layer_shell_get_layer_surface(struct wl_client *client,
 		wl_client_post_no_memory(client);
 		return;
 	}
-	wl_resource_set_implementation(layer_surface_resource, &layer_surface_impl, NULL, NULL);
+	wl_resource_set_implementation(layer_surface_resource, &layer_surface_impl, sw_surface, NULL);
 
 	surf->layer_surface = layer_surface_resource;
+
+	// todo: when plugin surface commits, proceed?
 }
 
 static const struct zwlr_layer_shell_v1_interface zwlr_layer_shell_v1_impl = {
@@ -1766,8 +1822,42 @@ int main(int argc, char **argv) {
 		swaylock_log(LOG_ERROR, "Failed to create socket pair for background plugin");
 		return EXIT_FAILURE;
 	}
+
+	// temp: make all backgrounds use some sort of plugin command
+	if (!state.args.plugin_command) {
+		char command[2048];
+		size_t start = 0;
+		start += sprintf(command + start, "swaybg -c '#%06x'", state.args.colors.background >> 8);
+
+		struct swaylock_image *image;
+		wl_list_for_each(image, &state.images, link) {
+			const char *mode = "stretch";
+			if (state.args.mode == BACKGROUND_MODE_STRETCH) {
+				mode = "stretch";
+			} else if (state.args.mode == BACKGROUND_MODE_FILL) {
+				mode = "fill";
+			} else if (state.args.mode == BACKGROUND_MODE_FIT) {
+				mode = "fit";
+			} else if (state.args.mode == BACKGROUND_MODE_CENTER) {
+				mode = "center";
+			} else if (state.args.mode == BACKGROUND_MODE_TILE) {
+				mode = "tile";
+			} else {
+				mode = "solid_color";
+			}
+
+			start += sprintf(command + start, " -o '%s' -i '%s' -m %s",
+				image->output_name ? image->output_name : "*", image->path, mode);
+		}
+
+		// todo: build more complicated swaybg command
+		state.args.plugin_command = strdup(command);
+	}
+
 	// single fork-exec; we don't want the plugin to outlive us
 	if (state.args.plugin_command) {
+		printf("Running command: %s\n", state.args.plugin_command);
+
 		pid_t pid = fork();
 		if (pid == 0) {
 			close(sockpair[1]);

@@ -143,15 +143,48 @@ struct forward_state {
 	struct feedback_tranche pending_tranche;
 };
 
+struct damage_record {
+	int32_t x,y,w,h;
+};
+
+struct surface_state {
+	/* wl_buffer, invoke get_resource for upstream */
+	struct wl_resource *attachment;
+	int32_t attach_x, attach_y;
+	int32_t offset_x, offset_y;
+	int32_t buffer_scale;
+	int32_t buffer_transform;
+};
+
+struct serial_pair {
+	uint32_t plugin_serial;
+	uint32_t upstream_serial;
+};
+
 /* this is a resource associated to a downstream wl_surface */
 struct forward_surface {
-	struct wl_surface *upstream;
-
 	bool has_been_configured;
 	struct wl_resource *layer_surface; // downstream only
 
 	/* is null until get_layer_surface is called and initializes this */
 	struct swaylock_surface *sway_surface;
+
+	/* list of callbacks for wl_surface::frame */
+	struct wl_list frame_callbacks;
+
+	// double-buffered state
+	struct surface_state pending;
+	struct surface_state committed;
+
+	/* damage is not, strictly speaking, double buffered */
+	struct damage_record *buffer_damage;
+	size_t buffer_damage_len;
+	struct damage_record *old_damage;
+	size_t old_damage_len;
+
+	uint32_t last_used_plugin_serial;
+	struct serial_pair *serial_table;
+	size_t serial_table_len;
 };
 
 struct swaylock_state {
@@ -185,12 +218,12 @@ struct swaylock_surface {
 	struct swaylock_state *state;
 	struct wl_output *output;
 	uint32_t output_global_name;
-	struct wl_surface *surface;
-	struct wl_surface *child; // surface made into subsurface
+	struct wl_surface *surface; // background
+	struct wl_surface *child; // overlay
 	struct wl_subsurface *subsurface;
-	// rendered by plugin, unsynchronized, placed between surface + child
-	struct wl_subsurface *plugin_subsurface;
-	struct forward_surface *plugin_child;
+
+	struct forward_surface *plugin_surface;
+
 	struct zwlr_layer_surface_v1 *layer_surface;
 	struct ext_session_lock_surface_v1 *ext_session_lock_surface_v1;
 	struct pool_buffer buffers[2];
@@ -209,6 +242,14 @@ struct swaylock_surface {
 	// todo: list of associated resources
 	struct wl_list nested_server_wl_output_resources;
 	struct wl_list nested_server_xdg_output_resources;
+
+	/* the serial of the configure which first established the size of the
+	 * surface; will be needed when plugin surface is set up and needs to link
+	 * its first configure to the first configure of the swaylock_surface */
+	uint32_t first_configure_serial;
+
+	/* has a buffer been attached and committed */
+	bool has_buffer;
 };
 
 /* Forwarding interface. These create various resources which maintain an
@@ -227,6 +268,10 @@ void bind_wl_shm(struct wl_client *client, void *data, uint32_t version, uint32_
 void bind_linux_dmabuf(struct wl_client *client, void *data, uint32_t version, uint32_t id);
 void bind_drm(struct wl_client *client, void *data, uint32_t version, uint32_t id);
 void send_dmabuf_feedback_data(struct wl_resource *feedback, const struct dmabuf_feedback_state *state);
+
+/* use this to record that in response to the configure event with upstream_serial,
+ * a configure event with downstream_serial was sent to the plugin surface */
+void add_serial_pair(struct forward_surface *plugin_surface, uint32_t upstream_serial, uint32_t downstream_serial);
 
 // There is exactly one swaylock_image for each -i argument
 struct swaylock_image {

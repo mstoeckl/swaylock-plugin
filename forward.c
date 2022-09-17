@@ -29,32 +29,31 @@ static void nested_surface_attach(struct wl_client *client,
 	assert(wl_resource_instance_of(resource, &wl_surface_interface, &surface_impl));
 	assert(wl_resource_instance_of(buffer, &wl_buffer_interface, &buffer_impl));
 	struct forward_surface *surface = wl_resource_get_user_data(resource);
-	struct wl_buffer* u_buffer = wl_resource_get_user_data(buffer);
-	wl_surface_attach(surface->upstream, u_buffer, x, y);
+
+	surface->pending.attachment = buffer;
 }
 static void nested_surface_damage(struct wl_client *client,
 		struct wl_resource *resource, int32_t x, int32_t y,
 		int32_t width, int32_t height) {
 	assert(wl_resource_instance_of(resource, &wl_surface_interface, &surface_impl));
 	struct forward_surface *surface = wl_resource_get_user_data(resource);
-	wl_surface_damage(surface->upstream, x, y, width, height);
+
+
+	struct damage_record *new_damage = realloc(surface->buffer_damage, sizeof(struct damage_record) * (surface->buffer_damage_len + 1));
+	if (new_damage) {
+		surface->buffer_damage = new_damage;
+		surface->buffer_damage[surface->buffer_damage_len].x = x;
+		surface->buffer_damage[surface->buffer_damage_len].y = y;
+		surface->buffer_damage[surface->buffer_damage_len].w = width;
+		surface->buffer_damage[surface->buffer_damage_len].h = height;
+		surface->buffer_damage_len++;
+	}
 }
 
-static void nested_frame_callback_done(void *data, struct wl_callback *wl_callback,
-	     uint32_t callback_data) {
-	struct wl_resource *callback_resource = data;
-	// the data field here doesn't matter, so no point in forwarding it
-	wl_callback_send_done(callback_resource, 0);
-}
-static const struct wl_callback_listener frame_callback_listener = {
-	.done = nested_frame_callback_done,
-};
 static void frame_callback_handle_resource_destroy(struct wl_resource *resource) {
 	assert(wl_resource_instance_of(resource, &wl_callback_interface, NULL));
-	struct wl_callback* callback = wl_resource_get_user_data(resource);
-	// delete the callback so that wl_callback.done event is not received
-	// with stale void *data
-	wl_callback_destroy(callback);
+
+	wl_list_remove(wl_resource_get_link(resource));
 }
 static void nested_surface_frame(struct wl_client *client,
 		struct wl_resource *resource, uint32_t callback) {
@@ -66,13 +65,12 @@ static void nested_surface_frame(struct wl_client *client,
 		wl_client_post_no_memory(client);
 		return;
 	}
+	wl_resource_set_implementation(callback_resource, NULL,
+		NULL, frame_callback_handle_resource_destroy);
 
 	struct forward_surface *surface = wl_resource_get_user_data(resource);
-	struct wl_callback *u_callback = wl_surface_frame(surface->upstream);
-	wl_resource_set_implementation(callback_resource, NULL,
-		u_callback, frame_callback_handle_resource_destroy);
-	wl_callback_add_listener(u_callback, &frame_callback_listener, callback_resource);
-
+	struct wl_list *link = wl_resource_get_link(callback_resource);
+	wl_list_insert(&surface->frame_callbacks, link);
 }
 static void nested_surface_set_opaque_region(struct wl_client *client,
 		struct wl_resource *resource, struct wl_resource *region) {
@@ -82,6 +80,34 @@ static void nested_surface_set_input_region(struct wl_client *client,
 		struct wl_resource *resource, struct wl_resource *region) {
 	// do nothing, swaylock doesn't need to know about regions
 }
+
+void add_serial_pair(struct forward_surface *surf, uint32_t upstream_serial, uint32_t downstream_serial) {
+	surf->serial_table = realloc(surf->serial_table, sizeof(struct serial_pair) * (surf->serial_table_len + 1));
+	assert(surf->serial_table);
+
+	surf->serial_table[surf->serial_table_len].plugin_serial = downstream_serial;
+	surf->serial_table[surf->serial_table_len].upstream_serial = upstream_serial;
+	surf->serial_table_len++;
+}
+
+static void bg_frame_handle_done(void *data, struct wl_callback *callback,
+		uint32_t time) {
+	(void)time;
+	struct forward_surface *surface = data;
+
+	// Trigger all frame callbacks for the background
+	struct wl_resource *plugin_cb, *tmp;
+	wl_resource_for_each_safe(plugin_cb, tmp, &surface->frame_callbacks) {
+		wl_callback_send_done(plugin_cb, 0);
+		wl_resource_destroy(plugin_cb);
+		// todo: destroy
+	}
+}
+
+static const struct wl_callback_listener bg_frame_listener = {
+	.done = bg_frame_handle_done,
+};
+
 static void nested_surface_commit(struct wl_client *client,
 		struct wl_resource *resource) {
 	assert(wl_resource_instance_of(resource, &wl_surface_interface, &surface_impl));
@@ -93,48 +119,136 @@ static void nested_surface_commit(struct wl_client *client,
 		return;
 	}
 
-	/* commit the root surface to which this is a subsurface.
-	 * The two surfaces are synchronized, so this should apply changes
-	 * to the current surface */
-	wl_surface_commit(surface->upstream); // note: may be able to skip this, and instead trigger the local surface's callbacks when the sway_surface's frame callback is triggered
-	wl_surface_commit(surface->sway_surface->surface);
-
 	if (!surface->has_been_configured) {
 		/* send initial configure */
-		uint32_t serial = wl_display_next_serial(wl_client_get_display(client));
+		uint32_t plugin_serial = wl_display_next_serial(wl_client_get_display(client));
 
 		if (surface->sway_surface->width == 0 || surface->sway_surface->height == 0) {
 			swaylock_log(LOG_ERROR, "committing nested surface before main surface dimensions known");
 		}
 
-		zwlr_layer_surface_v1_send_configure(surface->layer_surface, serial,
+		add_serial_pair(surface, surface->sway_surface->first_configure_serial, plugin_serial);
+		zwlr_layer_surface_v1_send_configure(surface->layer_surface, plugin_serial,
 			surface->sway_surface->width, surface->sway_surface->height);
 
 		surface->has_been_configured = true;
 
-
 		// todo: handle unmap/remap logic -- is it an error to attach a buffer
 		// after unmapping?
+		assert(!surface->pending.attachment);
+		/* The first commit should not be forwarded, because the main swaylock
+		 * process already made such a commit in order to receive its
+		 * own configure event. Thus, return here. */
+		return;
 	}
+
+	// todo: every buffer needs surface backreferences for auto-cleanup
+	// issue: figuring out details of this auto-cleanup
+	// (one approach: use a forward_buffer object holding the upstream,
+	// with a linked list of downstream users -- the plugin's wl_buffer
+	// itself, but also all surfaces linked via commits. Only delete upstream
+	// wl_buffer when all references are dead.)
+
+	// integrate details, and commit/send updated data only, here
+
+	struct wl_surface *background = surface->sway_surface->surface;
+
+	/* Apply changes */
+	if (surface->committed.buffer_scale != surface->pending.buffer_scale) {
+		wl_surface_set_buffer_scale(background, surface->pending.buffer_scale);
+		surface->committed.buffer_scale = surface->pending.buffer_scale;
+	}
+	if (surface->committed.buffer_transform != surface->pending.buffer_transform) {
+		wl_surface_set_buffer_transform(background, surface->pending.buffer_transform);
+		surface->committed.buffer_transform = surface->pending.buffer_transform;
+	}
+	if (surface->committed.buffer_scale != surface->pending.buffer_scale) {
+		wl_surface_set_buffer_scale(background, surface->pending.buffer_scale);
+		surface->committed.buffer_scale = surface->pending.buffer_scale;
+	}
+	if (surface->committed.attachment != surface->pending.attachment
+			|| surface->committed.attach_x != surface->pending.attach_x
+			|| surface->committed.attach_y != surface->pending.attach_y) {
+		// note: need '||  surface->pending.attachment' for random_walk_bg due to buffer reuse abuse
+		struct wl_buffer *upstream_buffer = surface->pending.attachment ?
+			wl_resource_get_user_data(surface->pending.attachment) :
+			NULL;
+		wl_surface_attach(background, upstream_buffer, surface->pending.attach_x, surface->pending.attach_y);
+		surface->committed.attachment = surface->pending.attachment;
+		surface->committed.attach_x = surface->pending.attach_x;
+		surface->committed.attach_y = surface->pending.attach_y;
+	}
+	if (surface->committed.offset_x != surface->pending.offset_x ||
+			surface->committed.offset_y != surface->pending.offset_y) {
+		wl_surface_offset(background, surface->pending.offset_x, surface->pending.offset_y);
+		surface->committed.offset_x = surface->pending.offset_x;
+		surface->committed.offset_y = surface->pending.offset_y;
+	}
+
+	/* apply and clear damage */
+	for (size_t i = 0; i < surface->buffer_damage_len; i++) {
+		wl_surface_damage_buffer(background, surface->buffer_damage[i].x,
+					 surface->buffer_damage[i].y,
+					 surface->buffer_damage[i].w,
+					 surface->buffer_damage[i].h);
+	}
+	for (size_t i = 0; i < surface->old_damage_len; i++) {
+		wl_surface_damage(background, surface->old_damage[i].x,
+					 surface->old_damage[i].y,
+					 surface->old_damage[i].w,
+					 surface->old_damage[i].h);
+	}
+
+	free(surface->buffer_damage);
+	surface->buffer_damage = NULL;
+	surface->buffer_damage_len = 0;
+
+	free(surface->old_damage);
+	surface->old_damage = NULL;
+	surface->old_damage_len = 0;
+
+	/* Finally, commit updates to corresponding upstream background surface */
+	if (surface->committed.attachment) {
+		// permit subsurface drawing
+		surface->sway_surface->has_buffer = true;
+	}
+
+	if (!wl_list_empty(&surface->frame_callbacks)) {
+		/* plugin has requested frame callbacks, so make a request now */
+		struct wl_callback *callback = wl_surface_frame(background);
+		wl_callback_add_listener(callback, &bg_frame_listener, surface);
+	}
+
+	wl_surface_commit(background);
 }
+
 static void nested_surface_set_buffer_transform(struct wl_client *client,
 		struct wl_resource *resource, int32_t transform) {
 	assert(wl_resource_instance_of(resource, &wl_surface_interface, &surface_impl));
 	struct forward_surface *surface = wl_resource_get_user_data(resource);
-	wl_surface_set_buffer_transform(surface->upstream, transform);
+	surface->pending.buffer_transform = transform;
 }
 static void nested_surface_set_buffer_scale(struct wl_client *client,
 		struct wl_resource *resource, int32_t scale) {
 	assert(wl_resource_instance_of(resource, &wl_surface_interface, &surface_impl));
 	struct forward_surface *surface = wl_resource_get_user_data(resource);
-	wl_surface_set_buffer_scale(surface->upstream, scale);
+	surface->pending.buffer_scale = scale;
 }
 static void nested_surface_damage_buffer(struct wl_client *client,
 		struct wl_resource *resource, int32_t x, int32_t y,
 		int32_t width, int32_t height) {
 	assert(wl_resource_instance_of(resource, &wl_surface_interface, &surface_impl));
 	struct forward_surface *surface = wl_resource_get_user_data(resource);
-	wl_surface_damage_buffer(surface->upstream, x, y, width, height);
+
+	struct damage_record *new_damage = realloc(surface->buffer_damage, sizeof(struct damage_record) * (surface->buffer_damage_len + 1));
+	if (new_damage) {
+		surface->buffer_damage = new_damage;
+		surface->buffer_damage[surface->buffer_damage_len].x = x;
+		surface->buffer_damage[surface->buffer_damage_len].y = y;
+		surface->buffer_damage[surface->buffer_damage_len].w = width;
+		surface->buffer_damage[surface->buffer_damage_len].h = height;
+		surface->buffer_damage_len++;
+	}
 }
 
 static const struct wl_surface_interface surface_impl = {
@@ -153,10 +267,9 @@ static const struct wl_surface_interface surface_impl = {
 static void surface_handle_resource_destroy(struct wl_resource *resource) {
 	assert(wl_resource_instance_of(resource, &wl_surface_interface, &surface_impl));
 	struct forward_surface *fwd_surface = wl_resource_get_user_data(resource);
-	wl_surface_destroy(fwd_surface->upstream);
 	/* todo: proper cleanup */
 	if (fwd_surface->sway_surface) {
-		fwd_surface->sway_surface->plugin_child = NULL;
+		fwd_surface->sway_surface->plugin_surface = NULL;
 	}
 	free(fwd_surface);
 }
@@ -177,11 +290,11 @@ static void compositor_create_surface(struct wl_client *client,
 		wl_client_post_no_memory(client);
 		return;
 	}
-
-	struct forward_state *server = wl_resource_get_user_data(resource);
-	struct wl_compositor *compositor = server->compositor;
-
-	fwd_surface->upstream = wl_compositor_create_surface(compositor);
+	wl_list_init(&fwd_surface->frame_callbacks);
+	struct wl_display *display = wl_client_get_display(client);
+	/* consume a serial, and do not reveal it to the client, for the purpose
+	 * of ensuring this value is unique. todo: simpler solution */
+	fwd_surface->last_used_plugin_serial = wl_display_next_serial(display);
 
 	wl_resource_set_implementation(surf_resource, &surface_impl,
 		fwd_surface, surface_handle_resource_destroy);

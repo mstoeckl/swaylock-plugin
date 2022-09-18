@@ -102,6 +102,7 @@ static void bg_frame_handle_done(void *data, struct wl_callback *callback,
 		wl_resource_destroy(plugin_cb);
 		// todo: destroy
 	}
+	wl_callback_destroy(callback);
 }
 
 static const struct wl_callback_listener bg_frame_listener = {

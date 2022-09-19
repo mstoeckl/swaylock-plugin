@@ -100,7 +100,6 @@ static void bg_frame_handle_done(void *data, struct wl_callback *callback,
 	wl_resource_for_each_safe(plugin_cb, tmp, &surface->frame_callbacks) {
 		wl_callback_send_done(plugin_cb, 0);
 		wl_resource_destroy(plugin_cb);
-		// todo: destroy
 	}
 	wl_callback_destroy(callback);
 }

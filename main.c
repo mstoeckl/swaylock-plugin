@@ -1379,11 +1379,16 @@ static void dispatch_nested(int fd, short mask, void *data) {
 	wl_event_loop_dispatch(state.server.loop, 0);
 }
 
-static void zxdg_output_destroy(struct wl_client *client, struct wl_resource *resource) {
+static void xdg_output_destroy_func(struct wl_resource *resource) {
+	/* remove xdg output resource from surface's list of them */
+	wl_list_remove(wl_resource_get_link(resource));
+}
+
+static void handle_zxdg_output_destroy(struct wl_client *client, struct wl_resource *resource) {
 	wl_resource_destroy(resource);
 }
 static const struct zxdg_output_v1_interface zxdg_output_impl = {
-	.destroy = zxdg_output_destroy,
+	.destroy = handle_zxdg_output_destroy,
 };
 
 static const struct wl_output_interface wl_output_impl;
@@ -1399,7 +1404,7 @@ static void xdg_output_manager_get_xdg_output(struct wl_client *client,
 		wl_client_post_no_memory(client);
 		return;
 	}
-	wl_resource_set_implementation(output_resource, &zxdg_output_impl, surface, NULL);
+	wl_resource_set_implementation(output_resource, &zxdg_output_impl, surface, xdg_output_destroy_func);
 
 	wl_list_insert(&surface->nested_server_xdg_output_resources, wl_resource_get_link(output_resource));
 

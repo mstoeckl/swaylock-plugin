@@ -29,8 +29,26 @@ static void nested_surface_attach(struct wl_client *client,
 	assert(wl_resource_instance_of(resource, &wl_surface_interface, &surface_impl));
 	assert(wl_resource_instance_of(buffer, &wl_buffer_interface, &buffer_impl));
 	struct forward_surface *surface = wl_resource_get_user_data(resource);
+	struct forward_buffer *f_buffer = wl_resource_get_user_data(buffer);
 
-	surface->pending.attachment = buffer;
+	if (surface->pending.attachment == f_buffer) {
+		/* no change */
+		return;
+	}
+	if (surface->pending.attachment != NULL && surface->pending.attachment != BUFFER_COMMITTED) {
+		/* Dereference pending buffer */
+		struct forward_buffer *old_buf = surface->pending.attachment;
+		wl_list_remove(&surface->pending.attachment_link);
+		/* Remove old buffer if no links to it left */
+		if (old_buf->resource == NULL && wl_list_empty(&old_buf->pending_surfaces)) {
+			assert(wl_list_empty(&old_buf->committed_surfaces));
+			wl_buffer_destroy(old_buf->buffer);
+			free(old_buf);
+		}
+	}
+
+	wl_list_insert(&f_buffer->pending_surfaces, &surface->pending.attachment_link);
+	surface->pending.attachment = f_buffer;
 }
 static void nested_surface_damage(struct wl_client *client,
 		struct wl_resource *resource, int32_t x, int32_t y,
@@ -166,18 +184,29 @@ static void nested_surface_commit(struct wl_client *client,
 		wl_surface_set_buffer_scale(background, surface->pending.buffer_scale);
 		surface->committed.buffer_scale = surface->pending.buffer_scale;
 	}
-	if (surface->committed.attachment != surface->pending.attachment
-			|| surface->committed.attach_x != surface->pending.attach_x
-			|| surface->committed.attach_y != surface->pending.attach_y) {
-		// note: need '||  surface->pending.attachment' for random_walk_bg due to buffer reuse abuse
-		struct wl_buffer *upstream_buffer = surface->pending.attachment ?
-			wl_resource_get_user_data(surface->pending.attachment) :
-			NULL;
-		wl_surface_attach(background, upstream_buffer, surface->pending.attach_x, surface->pending.attach_y);
+	if (surface->committed.attachment != surface->pending.attachment &&
+			!(surface->pending.attachment == BUFFER_COMMITTED)) {
+		// note: would need '||  surface->pending.attachment' for random_walk_bg due to buffer reuse abuse
+
+		/* unlink the committed attachment */
+		if (surface->committed.attachment != NULL && surface->committed.attachment != BUFFER_UNREACHABLE) {
+			assert(surface->committed.attachment->resource != NULL);
+			wl_list_remove(&surface->committed.attachment_link);
+		}
+
+		struct forward_buffer *upstream_buffer = surface->pending.attachment ?
+			surface->pending.attachment : NULL;
+		wl_surface_attach(background,
+			upstream_buffer ? upstream_buffer->buffer : NULL,
+			surface->pending.offset_x, surface->pending.offset_y);
+
 		surface->committed.attachment = surface->pending.attachment;
-		surface->committed.attach_x = surface->pending.attach_x;
-		surface->committed.attach_y = surface->pending.attach_y;
+		wl_list_insert(&upstream_buffer->committed_surfaces, &surface->committed.attachment_link);
+
+		surface->committed.offset_x = surface->pending.offset_x;
+		surface->committed.offset_y = surface->pending.offset_y;
 	}
+	/* If there was an offset change, but no buffer value change */
 	if (surface->committed.offset_x != surface->pending.offset_x ||
 			surface->committed.offset_y != surface->pending.offset_y) {
 		wl_surface_offset(background, surface->pending.offset_x, surface->pending.offset_y);
@@ -353,8 +382,10 @@ static void nested_buffer_destroy(struct wl_client *client, struct wl_resource *
 	wl_resource_destroy(resource);
 }
 static void handle_buffer_release(void *data, struct wl_buffer *wl_buffer) {
-	struct wl_resource *resource = data;
-	wl_buffer_send_release(resource);
+	struct forward_buffer *buffer = data;
+	if (buffer->resource) {
+		wl_buffer_send_release(buffer->resource);
+	}
 }
 static const struct wl_buffer_interface buffer_impl = {
 	.destroy = nested_buffer_destroy,
@@ -364,8 +395,25 @@ static const struct wl_buffer_listener buffer_listener = {
 };
 static void buffer_handle_resource_destroy(struct wl_resource *resource) {
 	assert(wl_resource_instance_of(resource, &wl_buffer_interface, &buffer_impl));
-	struct wl_buffer* buffer = wl_resource_get_user_data(resource);
-	wl_buffer_destroy(buffer);
+	struct forward_buffer* buffer = wl_resource_get_user_data(resource);
+	/* The plugin can not longer attach the buffer, so clean up all
+	 * places where it is committed. */
+	struct forward_surface *surface, *tmp;
+	wl_list_for_each_safe(surface, tmp, &buffer->committed_surfaces, committed.attachment_link) {
+		if (surface->pending.attachment == surface->committed.attachment) {
+			surface->pending.attachment = BUFFER_COMMITTED;
+			wl_list_remove(&surface->pending.attachment_link);
+		}
+		surface->committed.attachment = BUFFER_UNREACHABLE;
+		wl_list_remove(&surface->committed.attachment_link);
+	}
+
+	if (wl_list_empty(&buffer->pending_surfaces)) {
+		wl_buffer_destroy(buffer->buffer);
+		free(buffer);
+	} else {
+		buffer->resource = NULL;
+	}
 }
 static void nested_shm_pool_create_buffer(struct wl_client *client,
 		struct wl_resource *resource, uint32_t id,
@@ -381,13 +429,25 @@ static void nested_shm_pool_create_buffer(struct wl_client *client,
 		return;
 	}
 
-	struct wl_buffer *buffer = wl_shm_pool_create_buffer(shm_pool,
-		offset, width, height, stride, format);
+	struct forward_buffer *buffer = calloc(1, sizeof(struct forward_buffer));
+	if (!buffer) {
+		wl_client_post_no_memory(client);
+		return;
+	}
+	buffer->resource = buf_resource;
+	wl_list_init(&buffer->pending_surfaces);
+	wl_list_init(&buffer->committed_surfaces);
 
+	buffer->buffer = wl_shm_pool_create_buffer(shm_pool,
+		offset, width, height, stride, format);
+	if (!buffer->buffer) {
+		wl_client_post_no_memory(client);
+		return;
+	}
 	wl_resource_set_implementation(buf_resource, &buffer_impl,
 		buffer, buffer_handle_resource_destroy);
 
-	wl_buffer_add_listener(buffer, &buffer_listener, buf_resource);
+	wl_buffer_add_listener(buffer->buffer, &buffer_listener, buffer);
 }
 static void nested_shm_pool_destroy(struct wl_client *client,
 		 struct wl_resource *resource) {
@@ -478,12 +538,27 @@ static void nested_dmabuf_params_create_immed(struct wl_client *client,
 	}
 
 	struct zwp_linux_buffer_params_v1 *params = wl_resource_get_user_data(resource);
-	struct wl_buffer *buffer = zwp_linux_buffer_params_v1_create_immed(params, width, height, format, flags);
+
+
+	struct forward_buffer *buffer = calloc(1, sizeof(struct forward_buffer));
+	if (!buffer) {
+		wl_client_post_no_memory(client);
+		return;
+	}
+	buffer->resource = buffer_resource;
+	wl_list_init(&buffer->pending_surfaces);
+	wl_list_init(&buffer->committed_surfaces);
+
+	buffer->buffer = zwp_linux_buffer_params_v1_create_immed(params, width, height, format, flags);
+	if (!buffer->buffer) {
+		wl_client_post_no_memory(client);
+		return;
+	}
 
 	wl_resource_set_implementation(buffer_resource, &buffer_impl,
 		buffer, buffer_handle_resource_destroy);
 
-	wl_buffer_add_listener(buffer, &buffer_listener, buffer_resource);
+	wl_buffer_add_listener(buffer->buffer, &buffer_listener, buffer);
 }
 
 
@@ -670,7 +745,7 @@ void bind_linux_dmabuf(struct wl_client *client, void *data,
 
 static void nested_drm_authenticate(struct wl_client *client,
 		struct wl_resource *resource, uint32_t id) {
-	// ignore, or forward?
+	wl_client_post_implementation_error(client, "wl_drm.authenticate not supported");
 }
 static void nested_drm_create_buffer(struct wl_client *client,
 		struct wl_resource *resource, uint32_t id,

@@ -544,8 +544,9 @@ static void handle_global(void *data, struct wl_registry *registry,
 		uint32_t name, const char *interface, uint32_t version) {
 	struct swaylock_state *state = data;
 	if (strcmp(interface, wl_compositor_interface.name) == 0) {
+		/* version 5 required for wl_surface::offset */
 		state->compositor = wl_registry_bind(registry, name,
-				&wl_compositor_interface, 4);
+				&wl_compositor_interface, 5);
 		state->forward.compositor = state->compositor;
 	} else if (strcmp(interface, wl_subcompositor_interface.name) == 0) {
 		state->subcompositor = wl_registry_bind(registry, name,
@@ -591,6 +592,7 @@ static void handle_global(void *data, struct wl_registry *registry,
 		struct swaylock_surface *surface =
 			calloc(1, sizeof(struct swaylock_surface));
 		surface->state = state;
+		/* version 4 needed to learn name/description */
 		surface->output = wl_registry_bind(registry, name,
 				&wl_output_interface, 4);
 		surface->output_global_name = name;

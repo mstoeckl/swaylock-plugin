@@ -147,10 +147,29 @@ struct damage_record {
 	int32_t x,y,w,h;
 };
 
+struct forward_buffer {
+	/* may be null if plugin program deleted it */
+	struct wl_resource *resource;
+	/* upstream buffer */
+	struct wl_buffer *buffer;
+	/* list of surfaces where buffer is pending */
+	struct wl_list pending_surfaces;
+	/* list of surfaces where buffer is committed */
+	struct wl_list committed_surfaces;
+};
+/* BUFFER_UNREACHABLE is used for the committed buffer it it was been deleted
+ * downstream
+ *
+ * BUFFER_COMMITTED is used for the pending buffer if it was deleted downstream
+ * and matches whatever was already committed.
+ */
+#define BUFFER_UNREACHABLE (struct forward_buffer *)(-1)
+#define BUFFER_COMMITTED (struct forward_buffer *)(-2)
+
 struct surface_state {
 	/* wl_buffer, invoke get_resource for upstream */
-	struct wl_resource *attachment;
-	int32_t attach_x, attach_y;
+	struct forward_buffer *attachment;
+	struct wl_list attachment_link;
 	int32_t offset_x, offset_y;
 	int32_t buffer_scale;
 	int32_t buffer_transform;

@@ -281,6 +281,9 @@ void render_frame(struct swaylock_surface *surface) {
 	new_width += surface->scale - (new_width % surface->scale);
 
 	if (buffer_width != new_width || buffer_height != new_height) {
+		/* TODO: discarding render is wasteful -- both client
+		 * and compositor pay for it; does cairo have a null context
+		 * for size calculations? */
 		destroy_buffer(surface->current_buffer);
 		surface->indicator_width = new_width;
 		surface->indicator_height = new_height;
@@ -293,5 +296,10 @@ void render_frame(struct swaylock_surface *surface) {
 	wl_surface_damage_buffer(surface->child, 0, 0, INT32_MAX, INT32_MAX);
 	wl_surface_commit(surface->child);
 
+	/* note: this commit can lead to crashes due to mismatched output/buffer
+	 * sizes if it happens after the plugin program has acknowledged the
+	 * new output dimensions, but before the plugin program has actually
+	 * sent the updated buffer. Downside: with nonanimated background,
+	 * overlay will not show. */
 	wl_surface_commit(surface->surface);
 }

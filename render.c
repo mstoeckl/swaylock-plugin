@@ -296,10 +296,5 @@ void render_frame(struct swaylock_surface *surface) {
 	wl_surface_damage_buffer(surface->child, 0, 0, INT32_MAX, INT32_MAX);
 	wl_surface_commit(surface->child);
 
-	/* note: this commit can lead to crashes due to mismatched output/buffer
-	 * sizes if it happens after the plugin program has acknowledged the
-	 * new output dimensions, but before the plugin program has actually
-	 * sent the updated buffer. Downside: with nonanimated background,
-	 * overlay will not show. */
 	wl_surface_commit(surface->surface);
 }

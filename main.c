@@ -1511,9 +1511,7 @@ static void zwlr_layer_surface_get_popup(struct wl_client *client,
 }
 static void zwlr_layer_surface_ack_configure(struct wl_client *client,
 	struct wl_resource *resource, uint32_t serial) {
-	/* todo: validate serial sent to underlying surface, as a sanity check */
 	struct swaylock_surface *surface = wl_resource_get_user_data(resource);
-
 	struct forward_surface *plugin_surf = surface->plugin_surface;
 
 	if (serial == plugin_surf->last_used_plugin_serial) {
@@ -1548,18 +1546,14 @@ static void zwlr_layer_surface_ack_configure(struct wl_client *client,
 		return;
 	}
 
-
-	// todo: read the surface's serial table
-	// also, when a serial is used, prune all older serials
-
-	/* also need to figure out how to handle buffer size mismatches, if buffer
-	 * is sent without recent size guidance being acknowledged */
-
-	if (surface->ext_session_lock_surface_v1) {
-		ext_session_lock_surface_v1_ack_configure(surface->ext_session_lock_surface_v1, upstream_serial);
-	} else if (surface->layer_surface) {
-		zwlr_layer_surface_v1_ack_configure(surface->layer_surface, upstream_serial);
-	}
+	/* Do not send the ack_configure immediately; this avoids a race condition
+	 * where the plugin sends ack_configure, and before it sends the matching
+	 * configure with a buffer using the new size, the overlay gets updated
+	 * and swaylock injects an extra commit (which is necessary for some
+	 * subsurface state changes); this commit would use the old buffer with
+	 * the wrong size, which is a protocol error for ext-session-lock. */
+	surface->has_pending_ack_conf = true;
+	surface->pending_upstream_serial = upstream_serial;
 }
 static void zwlr_layer_surface_destroy(struct wl_client *client,
 	struct wl_resource *resource) {

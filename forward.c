@@ -11,6 +11,7 @@
 #include "linux-dmabuf-unstable-v1-server-protocol.h"
 #include "wayland-drm-server-protocol.h"
 #include "wlr-layer-shell-unstable-v1-server-protocol.h"
+#include "ext-session-lock-v1-client-protocol.h"
 
 static const struct wl_surface_interface surface_impl;
 static const struct wl_buffer_interface buffer_impl;
@@ -169,7 +170,8 @@ static void nested_surface_commit(struct wl_client *client,
 
 	// integrate details, and commit/send updated data only, here
 
-	struct wl_surface *background = surface->sway_surface->surface;
+	struct swaylock_surface *sw_surf = surface->sway_surface;
+	struct wl_surface *background = sw_surf->surface;
 
 	/* Apply changes */
 	if (surface->committed.buffer_scale != surface->pending.buffer_scale) {
@@ -246,6 +248,18 @@ static void nested_surface_commit(struct wl_client *client,
 		/* plugin has requested frame callbacks, so make a request now */
 		struct wl_callback *callback = wl_surface_frame(background);
 		wl_callback_add_listener(callback, &bg_frame_listener, surface);
+	}
+
+	if (sw_surf->has_pending_ack_conf) {
+		/* Submit this right before the commit, to avoid race conditions
+		 * between injected commits from the swaylock rendering and
+		 * the gap between ack and commit from the plugin */
+		if (sw_surf->ext_session_lock_surface_v1) {
+			ext_session_lock_surface_v1_ack_configure(sw_surf->ext_session_lock_surface_v1, sw_surf->pending_upstream_serial);
+		} else if (sw_surf->layer_surface) {
+			zwlr_layer_surface_v1_ack_configure(sw_surf->layer_surface, sw_surf->pending_upstream_serial);
+		}
+		sw_surf->has_pending_ack_conf = false;
 	}
 
 	wl_surface_commit(background);

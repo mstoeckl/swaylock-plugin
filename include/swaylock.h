@@ -267,6 +267,10 @@ struct swaylock_surface {
 	 * its first configure to the first configure of the swaylock_surface */
 	uint32_t first_configure_serial;
 
+	/* needed to delay ack configures from plugin until just before matching commit */
+	bool has_pending_ack_conf;
+	uint32_t pending_upstream_serial;
+
 	/* has a buffer been attached and committed */
 	bool has_buffer;
 };

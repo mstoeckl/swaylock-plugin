@@ -1582,6 +1582,8 @@ void wlr_layer_shell_get_layer_surface(struct wl_client *client,
 	struct swaylock_surface *sw_surface = wl_resource_get_user_data(output);
 	struct forward_surface *surf= wl_resource_get_user_data(surface);
 
+	// todo: replace the old surface instead; this will simplify implementation
+	// of plugin command restarting
 	if (sw_surface->plugin_surface) {
 		wl_client_post_implementation_error(client, "Tried to get a new layer surface for an output that already has one.");
 		return;
@@ -1625,6 +1627,59 @@ static void bind_wlr_layer_shell(struct wl_client *client, void *data, uint32_t 
 		return;
 	}
 	wl_resource_set_implementation(resource, &zwlr_layer_shell_v1_impl, NULL, NULL);
+}
+
+static bool run_plugin_command(struct swaylock_state *state) {
+	int sockpair[2];
+	if (socketpair(AF_UNIX, SOCK_STREAM, 0, sockpair) == -1) {
+		swaylock_log(LOG_ERROR, "Failed to create socket pair for background plugin");
+		return false;
+	}
+
+	printf("Running command: %s\n", state->args.plugin_command);
+
+	// todo: it should be possible to use posix_spawn
+	pid_t pid = fork();
+	if (pid == 0) {
+		close(sockpair[1]);
+
+		fprintf(stderr, "Forked background plugin: %d\n", getpid());
+		char wayland_socket_str[16];
+		snprintf(wayland_socket_str, sizeof(wayland_socket_str),
+				"%d", sockpair[0]);
+		setenv("WAYLAND_SOCKET", wayland_socket_str, true);
+		unsetenv("WAYLAND_DISPLAY");
+		// this avoids confusion between debug logs; alas, the default
+		// debug log does not distinguish programs :-(
+		unsetenv("WAYLAND_DEBUG");
+
+		execlp("sh", "sh", "-c", state->args.plugin_command, NULL);
+		swaylock_log(LOG_ERROR, "Failed to execlp");
+		return false;
+	} else if (pid == -1) {
+		swaylock_log(LOG_ERROR, "Failed to forkspawn background plugin");
+		return false;
+	}
+	close(sockpair[0]);
+	state->server.surf_client = wl_client_create(state->server.display, sockpair[1]);
+
+	wl_client_add_destroy_listener(state->server.surf_client,
+				       &state->client_destroy_listener);
+	return true;
+}
+
+static void client_destroyed(struct wl_listener *listener, void *data) {
+	struct swaylock_state *state = wl_container_of(listener, state, client_destroy_listener);
+	struct wl_client *client = data;
+	(void)client;
+
+	/* As the old client crashed, it is probably buggy; therefore start
+	 * a known stable program instead. */
+	free(state->args.plugin_command);
+	state->args.plugin_command = strdup("swaybg -c '#5cc1ff'");
+
+	// todo handle failure
+	run_plugin_command(state);
 }
 
 int main(int argc, char **argv) {
@@ -1817,13 +1872,6 @@ int main(int argc, char **argv) {
 
 	state.server.loop = wl_display_get_event_loop(state.server.display);
 
-
-	int sockpair[2];
-	if (socketpair(AF_UNIX, SOCK_STREAM, 0, sockpair) == -1) {
-		swaylock_log(LOG_ERROR, "Failed to create socket pair for background plugin");
-		return EXIT_FAILURE;
-	}
-
 	// temp: make all backgrounds use some sort of plugin command
 	if (!state.args.plugin_command) {
 		char command[2048];
@@ -1855,33 +1903,11 @@ int main(int argc, char **argv) {
 		state.args.plugin_command = strdup(command);
 	}
 
+	state.client_destroy_listener.notify = client_destroyed;
+
 	// single fork-exec; we don't want the plugin to outlive us
-	if (state.args.plugin_command) {
-		printf("Running command: %s\n", state.args.plugin_command);
-
-		pid_t pid = fork();
-		if (pid == 0) {
-			close(sockpair[1]);
-
-			fprintf(stderr, "Forked background plugin: %d\n", getpid());
-			char wayland_socket_str[16];
-			snprintf(wayland_socket_str, sizeof(wayland_socket_str),
-					"%d", sockpair[0]);
-			setenv("WAYLAND_SOCKET", wayland_socket_str, true);
-			unsetenv("WAYLAND_DISPLAY");
-			// this avoids confusion between debug logs; alas, the default
-			// debug log does not distinguish programs :-(
-			unsetenv("WAYLAND_DEBUG");
-
-			execlp("sh", "sh", "-c", state.args.plugin_command, NULL);
-			swaylock_log(LOG_ERROR, "Failed to execlp");
-			return EXIT_FAILURE;
-		} else if (pid == -1) {
-			swaylock_log(LOG_ERROR, "Failed to forkspawn background plugin");
-			return EXIT_FAILURE;
-		}
-		close(sockpair[0]);
-		state.server.surf_client = wl_client_create(state.server.display, sockpair[1]);
+	if (!run_plugin_command(&state)) {
+		return EXIT_FAILURE;
 	}
 	// TODO: close-and-reboot hook
 

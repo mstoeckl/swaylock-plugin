@@ -230,6 +230,7 @@ struct swaylock_state {
 	struct zxdg_output_manager_v1 *zxdg_output_manager;
 	struct forward_state forward;
 	struct swaylock_bg_server server;
+	struct wl_listener client_destroy_listener;
 };
 
 struct swaylock_surface {

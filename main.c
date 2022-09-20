@@ -237,9 +237,7 @@ static void layer_surface_configure(void *data,
 	surface->height = height;
 	surface->indicator_width = 0;
 	surface->indicator_height = 0;
-	zwlr_layer_surface_v1_ack_configure(layer_surface, serial);
 	forward_configure(surface, first_configure, serial);
-//	render_frame_background(surface);
 	if (surface->has_buffer) {
 		render_frame(surface);
 	}
@@ -276,7 +274,6 @@ static void ext_session_lock_surface_v1_handle_configure(void *data,
 	 *
 	 */
 	forward_configure(surface, first_configure, serial);
-//	render_frame_background(surface);
 	if (surface->has_buffer) {
 		render_frame(surface);
 	}
@@ -546,7 +543,7 @@ static void handle_global(void *data, struct wl_registry *registry,
 	if (strcmp(interface, wl_compositor_interface.name) == 0) {
 		/* version 5 required for wl_surface::offset */
 		state->compositor = wl_registry_bind(registry, name,
-				&wl_compositor_interface, 5);
+				&wl_compositor_interface, version >= 5 ? 5 : 4);
 		state->forward.compositor = state->compositor;
 	} else if (strcmp(interface, wl_subcompositor_interface.name) == 0) {
 		state->subcompositor = wl_registry_bind(registry, name,
@@ -1814,7 +1811,7 @@ int main(int argc, char **argv) {
 	state.server.display = wl_display_create();
 
 	/* fill in dmabuf modifier list if empty and upstream provided dmabuf-feedback */
-	if (zwp_linux_dmabuf_v1_get_version(state.forward.linux_dmabuf) >= 4) {
+	if (state.forward.linux_dmabuf && zwp_linux_dmabuf_v1_get_version(state.forward.linux_dmabuf) >= 4) {
 		size_t npairs = 0;
 		for (size_t i = 0; i < state.forward.current.tranches_len; i++) {
 			npairs += state.forward.current.tranches[i].indices.size;

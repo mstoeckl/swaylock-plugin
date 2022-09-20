@@ -1,7 +1,10 @@
 # swaylock-plugin
 
 This is a fork of [`swaylock`](https://github.com/swaywm/waylock), a screen
-locking utility for Wayland compositors. With it, instead of displaying a fixed image or color on the screen, you can display the animated output from any wallpaper program that implements the `wlr-layer-shell-unstable-v1` protocol. All you have to do is run `swaylock --command 'my-wallpaper --flags'`, where `my-wallpaper`
+locking utility for Wayland compositors. With it, instead of displaying a fixed image
+or color on the screen, you can display the animated output from any wallpaper program
+that implements the `wlr-layer-shell-unstable-v1` protocol. All you have to do
+is run `swaylock --command 'my-wallpaper ...'`, where `my-wallpaper ...`
 is replaced by your desired program. Programs which are known to work include:
 
 * [`swaybg`](https://github.com/swaywm/swaybg), which displays regular background images
@@ -14,10 +17,14 @@ is replaced by your desired program. Programs which are known to work include:
 It is compatible with Wayland compositors that implement the `ext-session-lock-v1`
 protocol.
 
-See the man page, `swaylock(1)`, for instructions on using swaylock.
-
 This is experimental software, so if something fails to work it's probably a bug
 in this program -- report it at https://github.com/mstoeckl/swaylock-plugin .
+
+As this fork is not nearly as well tested as the original swaylock, before using this
+program, ensure that you can recover from both an unresponsive lockscreen and one
+that has crashed.
+
+See the man page, `swaylock(1)`, for instructions on using swaylock.
 
 ## Installation
 

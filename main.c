@@ -1785,8 +1785,18 @@ int main(int argc, char **argv) {
 	state.forward.upstream_registry = registry;
 	wl_list_init(&state.forward.feedback_instances);
 
-	if (!state.compositor || !state.shm) {
-		swaylock_log(LOG_ERROR, "Missing wl_compositor or wl_shm");
+	if (!state.compositor) {
+		swaylock_log(LOG_ERROR, "Missing wl_compositor");
+		return 1;
+	}
+
+	if (!state.subcompositor) {
+		swaylock_log(LOG_ERROR, "Missing wl_subcompositor");
+		return 1;
+	}
+
+	if (!state.shm) {
+		swaylock_log(LOG_ERROR, "Missing wl_shm");
 		return 1;
 	}
 

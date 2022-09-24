@@ -89,24 +89,23 @@ protos_src = []
 protos_headers = []
 
 protocols = [
-	[wl_protocol_dir, 'stable/xdg-shell/xdg-shell.xml'],
-	[wl_protocol_dir, 'staging/ext-session-lock/ext-session-lock-v1.xml'],
-	[wl_protocol_dir, 'unstable/xdg-output/xdg-output-unstable-v1.xml'],
-	[wl_protocol_dir, 'unstable/fullscreen-shell/fullscreen-shell-unstable-v1.xml'],
-	[wl_protocol_dir, 'unstable/linux-dmabuf/linux-dmabuf-unstable-v1.xml'],
-	['wlr-layer-shell-unstable-v1.xml'],
-	['wlr-input-inhibitor-unstable-v1.xml'],
-	['wayland-drm.xml'],
+	wl_protocol_dir / 'stable/xdg-shell/xdg-shell.xml',
+	wl_protocol_dir / 'staging/ext-session-lock/ext-session-lock-v1.xml',
+	wl_protocol_dir / 'unstable/xdg-output/xdg-output-unstable-v1.xml',
+	wl_protocol_dir / 'unstable/fullscreen-shell/fullscreen-shell-unstable-v1.xml',
+	wl_protocol_dir / 'unstable/linux-dmabuf/linux-dmabuf-unstable-v1.xml',
+	'wlr-layer-shell-unstable-v1.xml',
+	'wlr-input-inhibitor-unstable-v1.xml',
+	'wayland-drm.xml',
 ]
 server_protocols = [
-	[wl_protocol_dir, 'unstable/xdg-output/xdg-output-unstable-v1.xml'],
-	[wl_protocol_dir, 'unstable/linux-dmabuf/linux-dmabuf-unstable-v1.xml'],
-	['wlr-layer-shell-unstable-v1.xml'],
-	['wayland-drm.xml'],
+	wl_protocol_dir / 'unstable/xdg-output/xdg-output-unstable-v1.xml',
+	wl_protocol_dir / 'unstable/linux-dmabuf/linux-dmabuf-unstable-v1.xml',
+	'wlr-layer-shell-unstable-v1.xml',
+	'wayland-drm.xml',
 ]
 
-foreach p : protocols
-	xml = join_paths(p)
+foreach xml : protocols
 	protos_src += wayland_scanner_code.process(xml)
 	protos_headers += wayland_scanner_client.process(xml)
 endforeach

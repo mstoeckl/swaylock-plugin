@@ -82,10 +82,7 @@ wayland_scanner_server = generator(
 	arguments: ['server-header', '@INPUT@', '@OUTPUT@'],
 )
 
-protos_src = []
-protos_headers = []
-
-protocols = [
+client_protocols = [
 	wl_protocol_dir / 'stable/xdg-shell/xdg-shell.xml',
 	wl_protocol_dir / 'staging/ext-session-lock/ext-session-lock-v1.xml',
 	wl_protocol_dir / 'unstable/xdg-output/xdg-output-unstable-v1.xml',
@@ -102,26 +99,18 @@ server_protocols = [
 	'wayland-drm.xml',
 ]
 
-foreach xml : protocols
+protos_src = []
+foreach xml : client_protocols
 	protos_src += wayland_scanner_code.process(xml)
-	protos_headers += wayland_scanner_client.process(xml)
+	protos_src += wayland_scanner_client.process(xml)
 endforeach
 
-foreach p : server_protocols
-	xml = join_paths(p)
-	protos_headers += wayland_scanner_server.process(xml)
+foreach xml : server_protocols
+	if not client_protocols.contains(xml)
+		protos_src += wayland_scanner_code.process(xml)
+	endif
+	protos_src += wayland_scanner_server.process(xml)
 endforeach
-
-lib_protos = static_library(
-	'prootos',
-	protos_src + protos_headers,
-	dependencies: [wayland_client]
-) # for the include directory
-
-client_protos = declare_dependency(
-	link_with: lib_protos,
-	sources: protos_headers,
-)
 
 conf_data = configuration_data()
 conf_data.set10('HAVE_GDK_PIXBUF', gdk_pixbuf.found())
@@ -130,7 +119,6 @@ subdir('include')
 
 dependencies = [
 	cairo,
-	client_protos,
 	gdk_pixbuf,
 	math,
 	rt,
@@ -168,7 +156,7 @@ endif
 swaylock_inc = include_directories('include')
 
 executable('swaylock',
-	sources,
+	sources + protos_src,
 	include_directories: [swaylock_inc],
 	dependencies: dependencies,
 	install: true

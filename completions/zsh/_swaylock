@@ -1,6 +1,6 @@
-#compdef swaylock
+#compdef swaylock-plugin
 #
-# Completion script for swaylock
+# Completion script for swaylock-plugin
 #
 
 _arguments -s \

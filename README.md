@@ -4,7 +4,7 @@ This is a fork of [`swaylock`](https://github.com/swaywm/waylock), a screen
 locking utility for Wayland compositors. With it, instead of displaying a fixed image
 or color on the screen, you can display the animated output from any wallpaper program
 that implements the `wlr-layer-shell-unstable-v1` protocol. All you have to do
-is run `swaylock --command 'my-wallpaper ...'`, where `my-wallpaper ...`
+is run `swaylock-plugin --command 'my-wallpaper ...'`, where `my-wallpaper ...`
 is replaced by your desired program. Programs which are known to work include:
 
 * [`swaybg`](https://github.com/swaywm/swaybg), which displays regular background images
@@ -23,7 +23,7 @@ As this fork is not nearly as well tested as the original swaylock, before using
 program, ensure that you can recover from both an unresponsive lockscreen and one
 that has crashed.
 
-See the man page, `swaylock(1)`, for instructions on using swaylock.
+See the man page, `swaylock-plugin(1)`, for instructions on using swaylock.
 
 ## Installation
 
@@ -48,8 +48,8 @@ Run these commands:
     ninja -C build
     sudo ninja -C build install
 
-On systems without PAM, you need to suid the swaylock binary:
+On systems without PAM, you need to suid the swaylock-plugin binary:
 
-    sudo chmod a+s /usr/local/bin/swaylock
+    sudo chmod a+s /usr/local/bin/swaylock-plugin
 
 Swaylock will drop root permissions shortly after startup.

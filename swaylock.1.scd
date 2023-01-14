@@ -1,16 +1,19 @@
-swaylock(1)
+swaylock-plugin(1)
 
 # NAME
 
-swaylock - Screen locker for Wayland
+swaylock-plugin - Screen locker for Wayland
 
 # SYNOPSIS
 
-_swaylock_ [options...]
+_swaylock-plugin_ [options...]
 
 Locks your Wayland session.
 
 # OPTIONS
+
+*--command* <cmd>
+	Specify the program used to draw the background.
 
 *-C, --config* <path>
 	The config file to use. By default, the following paths are checked:

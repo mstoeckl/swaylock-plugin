@@ -1,6 +1,6 @@
-# swaylock(1) completion
+# swaylock-plugin(1) completion
 
-_swaylock()
+_swaylock-plugin()
 {
   local cur prev short long scaling
   _get_comp_words_by_ref -n : cur prev
@@ -119,4 +119,4 @@ _swaylock()
   fi
 
 } &&
-complete -F _swaylock swaylock
+complete -F _swaylock-plugin swaylock-plugin

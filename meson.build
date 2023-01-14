@@ -1,5 +1,5 @@
 project(
-	'swaylock',
+	'swaylock-plugin',
 	'c',
 	version: '1.6',
 	license: 'MIT',
@@ -149,7 +149,7 @@ endif
 
 swaylock_inc = include_directories('include')
 
-executable('swaylock',
+executable('swaylock-plugin',
 	sources + protos_src,
 	include_directories: [swaylock_inc],
 	dependencies: dependencies,
@@ -157,7 +157,7 @@ executable('swaylock',
 )
 
 install_data(
-	'pam/swaylock',
+	'pam/swaylock-plugin',
 	install_dir: get_option('sysconfdir') / 'pam.d'
 )
 
@@ -169,7 +169,7 @@ if scdoc.found()
 	foreach filename : man_files
 		topic = filename.split('.')[-3].split('/')[-1]
 		section = filename.split('.')[-2]
-		output = '@0@.@1@'.format(topic, section)
+		output = '@0@-plugin.@1@'.format(topic, section)
 
 		custom_target(
 			output,

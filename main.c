@@ -1850,6 +1850,9 @@ int main(int argc, char **argv) {
 		return 1;
 	}
 
+	state.test_surface = cairo_image_surface_create(CAIRO_FORMAT_RGB24, 1, 1);
+	state.test_cairo = cairo_create(state.test_surface);
+
 	struct swaylock_surface *surface;
 	wl_list_for_each(surface, &state.surfaces, link) {
 		create_surface(surface);
@@ -1990,5 +1993,7 @@ int main(int argc, char **argv) {
 	}
 
 	free(state.args.font);
+	cairo_destroy(state.test_cairo);
+	cairo_surface_destroy(state.test_surface);
 	return 0;
 }

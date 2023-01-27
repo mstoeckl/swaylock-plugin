@@ -21,7 +21,9 @@ in this program -- report it at https://github.com/mstoeckl/swaylock-plugin .
 
 As this fork is not nearly as well tested as the original swaylock, before using this
 program, ensure that you can recover from both an unresponsive lockscreen and one
-that has crashed.
+that has crashed. (For example, in Sway, by creating a `--locked` bindsym to kill and
+restart swaylock; or by switching to a different virtual terminal, running
+`killall swaylock`and running swaylock, and restarting with e.g. `WAYLAND_DISPLAY=wayland-1 swaylock` .)
 
 See the man page, `swaylock-plugin(1)`, for instructions on using swaylock.
 

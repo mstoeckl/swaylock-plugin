@@ -8,7 +8,6 @@
 #include "cairo.h"
 #include "pool-buffer.h"
 #include "seat.h"
-#include "wlr-layer-shell-unstable-v1-client-protocol.h"
 #include "linux-dmabuf-unstable-v1-client-protocol.h"
 #include "wayland-drm-client-protocol.h"
 
@@ -214,7 +213,6 @@ struct swaylock_state {
 	struct wl_display *display;
 	struct wl_compositor *compositor;
 	struct wl_subcompositor *subcompositor;
-	struct zwlr_layer_shell_v1 *layer_shell;
 	struct zwlr_input_inhibit_manager_v1 *input_inhibit_manager;
 	struct wl_shm *shm;
 	struct zwp_linux_dmabuf_feedback_v1 *dmabuf_default_feedback;
@@ -247,7 +245,6 @@ struct swaylock_surface {
 
 	struct forward_surface *plugin_surface;
 
-	struct zwlr_layer_surface_v1 *layer_surface;
 	struct ext_session_lock_surface_v1 *ext_session_lock_surface_v1;
 	struct pool_buffer buffers[2];
 	struct pool_buffer indicator_buffers[2];

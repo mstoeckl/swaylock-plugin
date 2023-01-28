@@ -254,11 +254,7 @@ static void nested_surface_commit(struct wl_client *client,
 		/* Submit this right before the commit, to avoid race conditions
 		 * between injected commits from the swaylock rendering and
 		 * the gap between ack and commit from the plugin */
-		if (sw_surf->ext_session_lock_surface_v1) {
-			ext_session_lock_surface_v1_ack_configure(sw_surf->ext_session_lock_surface_v1, sw_surf->pending_upstream_serial);
-		} else if (sw_surf->layer_surface) {
-			zwlr_layer_surface_v1_ack_configure(sw_surf->layer_surface, sw_surf->pending_upstream_serial);
-		}
+		ext_session_lock_surface_v1_ack_configure(sw_surf->ext_session_lock_surface_v1, sw_surf->pending_upstream_serial);
 		sw_surf->has_pending_ack_conf = false;
 	}
 

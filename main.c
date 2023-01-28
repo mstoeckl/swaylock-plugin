@@ -236,8 +236,6 @@ static void layer_surface_configure(void *data,
 	bool first_configure = surface->width <= 0 || surface->height <= 0;
 	surface->width = width;
 	surface->height = height;
-	surface->indicator_width = 0;
-	surface->indicator_height = 0;
 	forward_configure(surface, first_configure, serial);
 	if (surface->has_buffer) {
 		render_frame(surface);
@@ -262,8 +260,6 @@ static void ext_session_lock_surface_v1_handle_configure(void *data,
 	bool first_configure = surface->width <= 0 || surface->height <= 0;
 	surface->width = width;
 	surface->height = height;
-	surface->indicator_width = 0;
-	surface->indicator_height = 0;
 	/* Quoting the spec:
 	 *	Sending an ack_configure request consumes the configure event
 	 *	referenced by the given serial, as well as all older configure

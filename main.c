@@ -156,7 +156,8 @@ static void ext_session_lock_surface_v1_handle_configure(void *data,
 	struct swaylock_surface *surface = data;
 	surface->width = width;
 	surface->height = height;
-	ext_session_lock_surface_v1_ack_configure(lock_surface, serial);
+	surface->configure_serial = serial;
+	surface->needs_ack_configure = true;
 	render_frame_background(surface);
 	render_frame(surface);
 }

@@ -4,6 +4,7 @@
 #include "cairo.h"
 #include "background-image.h"
 #include "swaylock.h"
+#include "ext-session-lock-v1-client-protocol.h"
 
 #define M_PI 3.14159265358979323846
 const float TYPE_INDICATOR_RANGE = M_PI / 3.0f;
@@ -45,6 +46,20 @@ void render_frame_background(struct swaylock_surface *surface) {
 			surface->buffers, buffer_width, buffer_height);
 	if (buffer == NULL) {
 		return;
+	}
+
+	if (surface->needs_ack_configure) {
+		/* Only acknowledge the configure event if swaylock has
+		 * successfully created a buffer which matches the requested
+		 * dimensions. If the configure event is acknowledged without
+		 * providing a new buffer, it would be possible for render_frame
+		 * to commit surface->surface with the unchanged old buffer
+		 * dimensions (that differ from what it acknowledged), which
+		 * is a protocol error. */
+		ext_session_lock_surface_v1_ack_configure(
+			surface->ext_session_lock_surface_v1,
+			surface->configure_serial);
+		surface->needs_ack_configure = false;
 	}
 
 	cairo_t *cairo = buffer->cairo;

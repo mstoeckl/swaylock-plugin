@@ -107,6 +107,8 @@ struct swaylock_surface {
 	bool frame_pending, dirty;
 	uint32_t width, height;
 	int32_t scale;
+	bool needs_ack_configure;
+	uint32_t configure_serial;
 	enum wl_output_subpixel subpixel;
 	char *output_name;
 	struct wl_list link;

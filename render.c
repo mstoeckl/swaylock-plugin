@@ -4,6 +4,7 @@
 #include "cairo.h"
 #include "background-image.h"
 #include "swaylock.h"
+#include "log.h"
 
 #define M_PI 3.14159265358979323846
 const float TYPE_INDICATOR_RANGE = M_PI / 3.0f;

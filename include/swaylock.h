@@ -239,14 +239,13 @@ struct swaylock_surface {
 	struct swaylock_state *state;
 	struct wl_output *output;
 	uint32_t output_global_name;
-	struct wl_surface *surface; // background
-	struct wl_surface *child; // overlay
+	struct wl_surface *surface; // surface for background
+	struct wl_surface *child; // indicator surface made into subsurface
 	struct wl_subsurface *subsurface;
 
 	struct forward_surface *plugin_surface;
 
 	struct ext_session_lock_surface_v1 *ext_session_lock_surface_v1;
-	struct pool_buffer buffers[2];
 	struct pool_buffer indicator_buffers[2];
 	bool frame_pending, dirty;
 	uint32_t width, height;

@@ -131,6 +131,9 @@ static void nested_surface_commit(struct wl_client *client,
 		struct wl_resource *resource) {
 	assert(wl_resource_instance_of(resource, &wl_surface_interface, &surface_impl));
 	struct forward_surface *surface = wl_resource_get_user_data(resource);
+	if (surface->inert) {
+		return;
+	}
 
 	if (!surface->sway_surface) {
 		/* todo: is a role required? if not, should only ignore in this case */

@@ -193,6 +193,8 @@ struct forward_surface {
 
 	/* is null until get_layer_surface is called and initializes this */
 	struct swaylock_surface *sway_surface;
+	// set after layer surface is destroyed
+	bool inert;
 
 	/* list of callbacks for wl_surface::frame */
 	struct wl_list frame_callbacks;
@@ -241,6 +243,10 @@ struct swaylock_state {
 	struct forward_state forward;
 	struct swaylock_bg_server server;
 	struct wl_listener client_destroy_listener;
+
+	// for nested server, output was destroyed
+	struct wl_list stale_wl_output_resources;
+	struct wl_list stale_xdg_output_resources;
 };
 
 struct swaylock_surface {
@@ -265,7 +271,7 @@ struct swaylock_surface {
 	struct wl_list link;
 
 	struct wl_global *nested_server_output;
-	// todo: list of associated resources
+	// lists of associated resources
 	struct wl_list nested_server_wl_output_resources;
 	struct wl_list nested_server_xdg_output_resources;
 

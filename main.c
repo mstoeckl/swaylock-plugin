@@ -106,7 +106,29 @@ static void daemonize(void) {
 }
 
 static void destroy_surface(struct swaylock_surface *surface) {
+	struct swaylock_state *state = surface->state;
 	wl_list_remove(&surface->link);
+	if (surface->plugin_surface) {
+		// todo: proper cleanup
+		zwlr_layer_surface_v1_send_closed(surface->plugin_surface->layer_surface);
+		surface->plugin_surface->sway_surface = NULL;
+		surface->plugin_surface->inert = true;
+	}
+
+	if (surface->nested_server_output) {
+		wl_global_remove(surface->nested_server_output);
+		// Unlink the resources; calling wl_resource_remove might be unsafe?
+		struct wl_resource *output, *tmp;
+		wl_resource_for_each_safe(output, tmp, &surface->nested_server_xdg_output_resources) {
+			wl_list_remove(wl_resource_get_link(output));
+			wl_list_insert(&state->stale_xdg_output_resources, wl_resource_get_link(output));
+		}
+		wl_resource_for_each_safe(output, tmp, &surface->nested_server_wl_output_resources) {
+			wl_list_remove(wl_resource_get_link(output));
+			wl_list_insert(&state->stale_wl_output_resources, wl_resource_get_link(output));
+		}
+	}
+
 	if (surface->ext_session_lock_surface_v1 != NULL) {
 		ext_session_lock_surface_v1_destroy(surface->ext_session_lock_surface_v1);
 	}
@@ -171,8 +193,9 @@ static void forward_configure(struct swaylock_surface *surface, bool first_confi
 	if (first_configure && (surface->width > 0 && surface->height > 0)) {
 		// delay output creation until we know exactly what layer
 		// surface size we are provided with.
-		wl_global_create(surface->state->server.display,
-			&wl_output_interface, WL_OUTPUT_VERSION, surface, bind_wl_output);
+		surface->nested_server_output = wl_global_create(
+			surface->state->server.display, &wl_output_interface,
+			WL_OUTPUT_VERSION, surface, bind_wl_output);
 
 		surface->first_configure_serial = serial;
 	} else if (surface->width > 0 && surface->height > 0) {
@@ -1762,6 +1785,8 @@ int main(int argc, char **argv) {
 	state.forward.upstream_display = state.display;
 	state.forward.upstream_registry = registry;
 	wl_list_init(&state.forward.feedback_instances);
+	wl_list_init(&state.stale_wl_output_resources);
+	wl_list_init(&state.stale_xdg_output_resources);
 
 	if (!state.compositor) {
 		swaylock_log(LOG_ERROR, "Missing wl_compositor");

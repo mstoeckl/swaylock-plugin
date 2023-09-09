@@ -184,6 +184,9 @@ struct surface_state {
 struct serial_pair {
 	uint32_t plugin_serial;
 	uint32_t upstream_serial;
+	/* if true, plugin serial was not generated in response to an
+	 * upstream configure event; so do not forward acknowledgements. */
+	bool local_only;
 };
 
 /* this is a resource associated to a downstream wl_surface */
@@ -279,6 +282,7 @@ struct swaylock_surface {
 	 * surface; will be needed when plugin surface is set up and needs to link
 	 * its first configure to the first configure of the swaylock_surface */
 	uint32_t first_configure_serial;
+	bool used_first_configure;
 
 	/* needed to delay ack configures from plugin until just before matching commit */
 	bool has_pending_ack_conf;
@@ -306,8 +310,9 @@ void bind_drm(struct wl_client *client, void *data, uint32_t version, uint32_t i
 void send_dmabuf_feedback_data(struct wl_resource *feedback, const struct dmabuf_feedback_state *state);
 
 /* use this to record that in response to the configure event with upstream_serial,
- * a configure event with downstream_serial was sent to the plugin surface */
-void add_serial_pair(struct forward_surface *plugin_surface, uint32_t upstream_serial, uint32_t downstream_serial);
+ * a configure event with downstream_serial was sent to the plugin surface.
+ * If local_only=true, mark that the downstream serial does _not_ need forwarding. */
+void add_serial_pair(struct forward_surface *plugin_surface, uint32_t upstream_serial, uint32_t downstream_serial, bool local_only);
 
 // There is exactly one swaylock_image for each -i argument
 struct swaylock_image {

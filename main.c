@@ -198,6 +198,7 @@ static void forward_configure(struct swaylock_surface *surface, bool first_confi
 			WL_OUTPUT_VERSION, surface, bind_wl_output);
 
 		surface->first_configure_serial = serial;
+		surface->used_first_configure = false;
 	} else if (surface->width > 0 && surface->height > 0) {
 		struct wl_resource *output;
 		wl_resource_for_each(output, &surface->nested_server_wl_output_resources) {
@@ -219,7 +220,7 @@ static void forward_configure(struct swaylock_surface *surface, bool first_confi
 				/* wait until the first commit/configure cycle is over */
 				struct wl_display *plugin_display = surface->state->server.display;
 				uint32_t plugin_serial = wl_display_next_serial(plugin_display);
-				add_serial_pair(surface->plugin_surface, serial, plugin_serial);
+				add_serial_pair(surface->plugin_surface, serial, plugin_serial, false);
 				zwlr_layer_surface_v1_send_configure(surface->plugin_surface->layer_surface,
 								     plugin_serial,
 					surface->width, surface->height);
@@ -1508,6 +1509,7 @@ static void zwlr_layer_surface_ack_configure(struct wl_client *client,
 		if (plugin_surf->serial_table[i].plugin_serial == serial) {
 			upstream_serial = plugin_surf->serial_table[i].upstream_serial;
 			found_serial = true;
+			bool local_only = plugin_surf->serial_table[i].local_only;
 
 			/* once a serial is used, discard both it and serials older than it */
 			memmove(plugin_surf->serial_table, plugin_surf->serial_table + (i + 1),
@@ -1515,6 +1517,11 @@ static void zwlr_layer_surface_ack_configure(struct wl_client *client,
 					* sizeof(struct serial_pair) );
 			plugin_surf->serial_table_len -= (i+1);
 
+			if (local_only) {
+				// This serial was sent by us, not in response
+				// to an upstream configure, so do not forward it
+				return;
+			}
 			break;
 		}
 	}
@@ -1653,8 +1660,11 @@ static void client_destroyed(struct wl_listener *listener, void *data) {
 
 	/* As the old client crashed, it is probably buggy; therefore start
 	 * a known stable program instead. */
-	free(state->args.plugin_command);
-	state->args.plugin_command = strdup("swaybg -c '#5cc1ff'");
+	if (0) {
+		// TODO: develop failure detection methods
+		free(state->args.plugin_command);
+		state->args.plugin_command = strdup("swaybg -c '#5cc1ff'");
+	}
 
 	// todo handle failure
 	run_plugin_command(state);
@@ -1671,11 +1681,11 @@ static void term_in(int fd, short mask, void *data) {
 void log_init(int argc, char **argv) {
 	static struct option long_options[] = {
 		{"debug", no_argument, NULL, 'd'},
-        {0, 0, 0, 0}
-    };
-    int c;
-	optind = 1;
-    while (1) {
+		{0, 0, 0, 0}
+	};
+	int c;
+		optind = 1;
+	while (1) {
 		int opt_idx = 0;
 		c = getopt_long(argc, argv, "-:d", long_options, &opt_idx);
 		if (c == -1) {
@@ -1950,8 +1960,6 @@ int main(int argc, char **argv) {
 	if (!run_plugin_command(&state)) {
 		return EXIT_FAILURE;
 	}
-	// TODO: close-and-reboot hook
-
 
 	state.eventloop = loop_create();
 	loop_add_fd(state.eventloop, wl_display_get_fd(state.display), POLLIN,

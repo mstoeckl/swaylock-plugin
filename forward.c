@@ -100,12 +100,15 @@ static void nested_surface_set_input_region(struct wl_client *client,
 	// do nothing, swaylock doesn't need to know about regions
 }
 
-void add_serial_pair(struct forward_surface *surf, uint32_t upstream_serial, uint32_t downstream_serial) {
+void add_serial_pair(struct forward_surface *surf, uint32_t upstream_serial, uint32_t downstream_serial, bool local_only) {
 	surf->serial_table = realloc(surf->serial_table, sizeof(struct serial_pair) * (surf->serial_table_len + 1));
 	assert(surf->serial_table);
 
-	surf->serial_table[surf->serial_table_len].plugin_serial = downstream_serial;
-	surf->serial_table[surf->serial_table_len].upstream_serial = upstream_serial;
+	surf->serial_table[surf->serial_table_len] = (struct serial_pair) {
+		.plugin_serial = downstream_serial,
+		.upstream_serial = upstream_serial,
+		.local_only = local_only,
+	};
 	surf->serial_table_len++;
 }
 
@@ -149,7 +152,16 @@ static void nested_surface_commit(struct wl_client *client,
 			swaylock_log(LOG_ERROR, "committing nested surface before main surface dimensions known");
 		}
 
-		add_serial_pair(surface, surface->sway_surface->first_configure_serial, plugin_serial);
+		// When committing a plugin surface for the first time,
+		// if the upstream surface is also new, then forward the configure;
+		// but if the upsteam surface was configured long ago, then
+		// keep the configure local
+		if (surface->sway_surface->used_first_configure) {
+			add_serial_pair(surface, 0, plugin_serial, true);
+		} else {
+			add_serial_pair(surface, surface->sway_surface->first_configure_serial, plugin_serial, false);
+			surface->sway_surface->used_first_configure = true;
+		}
 		zwlr_layer_surface_v1_send_configure(surface->layer_surface, plugin_serial,
 			surface->sway_surface->width, surface->sway_surface->height);
 

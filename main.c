@@ -2077,7 +2077,12 @@ int main(int argc, char **argv) {
 		POLLIN, dispatch_nested, NULL);
 
 	loop_add_fd(state.eventloop, sigusr_fds[0], POLLIN, term_in, NULL);
-	signal(SIGUSR1, do_sigusr);
+
+	struct sigaction sa;
+	sa.sa_handler = do_sigusr;
+	sigemptyset(&sa.sa_mask);
+	sa.sa_flags = SA_RESTART;
+	sigaction(SIGUSR1, &sa, NULL);
 
 	state.run_display = true;
 	while (state.run_display) {

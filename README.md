@@ -15,12 +15,12 @@ is replaced by your desired program. Examples:
 * You can rotate between wallpapers in a folder by setting the following script
   as the command; e.g.: `swaylock-plugin --command './rotate_example.sh /path/to/folder'`. (This works by periodically killing the wallpaper program, after which `swaylock-plugin` automatically restarts it.)
     ```
-#!/bin/sh
-file=`ls $1 | shuf -n 1`
-delay=60.
-echo "Runnning swaybg for $delay secs on: $1/$file"
-timeout $delay swaybg -i $1/$file
-```
+    #!/bin/sh
+    file=`ls $1 | shuf -n 1`
+    delay=60.
+    echo "Runnning swaybg for $delay secs on: $1/$file"
+    timeout $delay swaybg -i $1/$file
+    ```
 
 ` swaylock-plugin` requires that the Wayland compositor implement the `ext-session-lock-v1` protocol.
 

@@ -245,6 +245,9 @@ struct swaylock_state {
 	struct zxdg_output_manager_v1 *zxdg_output_manager;
 	struct forward_state forward;
 	struct swaylock_bg_server server;
+	bool client_nontrivial; // did client even create the wl_registry resource?
+	struct loop_timer *client_connect_timer; // timer to give up on client connecting
+	struct wl_listener client_resource_create_listener;
 	struct wl_listener client_destroy_listener;
 
 	// for nested server, output was destroyed

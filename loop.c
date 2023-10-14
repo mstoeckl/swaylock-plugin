@@ -89,8 +89,8 @@ void loop_poll(struct loop *loop) {
 
 	// Dispatch fds
 	size_t fd_index = 0;
-	struct loop_fd_event *event = NULL;
-	wl_list_for_each(event, &loop->fd_events, link) {
+	struct loop_fd_event *event = NULL, *tmp_event = NULL;
+	wl_list_for_each_safe(event, tmp_event, &loop->fd_events, link) {
 		struct pollfd pfd = loop->fds[fd_index];
 
 		// Always send these events

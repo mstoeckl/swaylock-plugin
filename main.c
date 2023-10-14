@@ -39,6 +39,7 @@
 #define WL_OUTPUT_VERSION 4
 static void bind_wl_output(struct wl_client *client, void *data,
 		uint32_t version, uint32_t id);
+static void render_fallback_surface(struct swaylock_surface *surface);
 
 static uint32_t parse_color(const char *color) {
 	if (color[0] == '#') {
@@ -246,7 +247,12 @@ static void ext_session_lock_surface_v1_handle_configure(void *data,
 	 * This makes mixing client vs plugin rendering tricky.
 	 *
 	 */
-	forward_configure(surface, first_configure, serial);
+	if (surface->state->server.display) {
+		forward_configure(surface, first_configure, serial);
+	} else {
+		ext_session_lock_surface_v1_ack_configure(surface->ext_session_lock_surface_v1, serial);
+		render_fallback_surface(surface);
+	}
 	if (surface->has_buffer) {
 		render_frame(surface);
 	}
@@ -1614,6 +1620,73 @@ static void bind_wlr_layer_shell(struct wl_client *client, void *data, uint32_t 
 	wl_resource_set_implementation(resource, &zwlr_layer_shell_v1_impl, NULL, NULL);
 }
 
+static void render_fallback_surface(struct swaylock_surface *surface) {
+	// create a new buffer each time; this is a fallback path, so efficiency
+	// is much less important than correctness. That being said, if wp_viewporter
+	// were available, one could make a single-pixel buffer in advance
+
+	struct pool_buffer buffer;
+	if (!create_buffer(surface->state->shm, &buffer, surface->width, surface->height,
+			WL_SHM_FORMAT_ARGB8888)) {
+		swaylock_log(LOG_ERROR,
+			     "Failed to create new buffer for frame background.");
+		return;
+	}
+	cairo_t *cairo = buffer.cairo;
+	cairo_set_source_rgba(buffer.cairo, 0.73, 0.73, 0.73, 1.0);
+	cairo_set_operator(buffer.cairo, CAIRO_OPERATOR_SOURCE);
+	cairo_paint(cairo);
+
+	wl_surface_set_buffer_scale(surface->surface, 1);
+	wl_surface_attach(surface->surface, buffer.buffer, 0, 0);
+	wl_surface_damage_buffer(surface->surface, 0, 0, INT32_MAX, INT32_MAX);
+	wl_surface_commit(surface->surface);
+	destroy_buffer(&buffer);
+
+	surface->has_buffer = true;
+}
+
+static void setup_clientless_mode(struct swaylock_state *state) {
+	// First, shutdown nested server and all resources.
+	// todo: any additional clean up necessary?
+	loop_remove_fd(state->eventloop, wl_event_loop_get_fd(state->server.loop));
+	wl_display_destroy(state->server.display);
+	state->server.display = NULL;
+
+	struct swaylock_surface *surface = NULL;
+	wl_list_for_each(surface, &state->surfaces, link) {
+		bool pre_configure = surface->width <= 0 || surface->height <= 0;
+		if (pre_configure) {
+			continue;
+		}
+
+		if (!surface->has_buffer) {
+			// i.e, swaylock surface received its first configure,
+			// but the nested client has not yet assigned a buffer,
+			// so that configure has not been replied to. (This may be wrong)
+			ext_session_lock_surface_v1_ack_configure(surface->ext_session_lock_surface_v1, surface->first_configure_serial);
+			render_fallback_surface(surface);
+		}
+		render_frame(surface);
+	}
+
+}
+static void client_connection_timeout(void *data) {
+	struct swaylock_state *state = data;
+	swaylock_log(LOG_ERROR, "Client connection timed out; falling back to a client-less mode");
+
+	if (!state->server.surf_client) {
+		swaylock_log(LOG_ERROR, "Somehow had a client timeout despite client being destroyed");
+		return;
+	}
+
+	wl_list_remove(&state->client_destroy_listener.link);
+	wl_client_destroy(state->server.surf_client);
+	state->server.surf_client = NULL;
+
+	setup_clientless_mode(state);
+}
+
 static bool run_plugin_command(struct swaylock_state *state) {
 	int sockpair[2];
 	if (socketpair(AF_UNIX, SOCK_STREAM, 0, sockpair) == -1) {
@@ -1647,27 +1720,62 @@ static bool run_plugin_command(struct swaylock_state *state) {
 	}
 	close(sockpair[0]);
 	state->server.surf_client = wl_client_create(state->server.display, sockpair[1]);
+	state->client_nontrivial = false;
+
+	// Note: the timers added here use CLOCK_MONOTONIC, which on Linux does not
+	// count time in a suspended state; the callback will only mark the client
+	// as broken/not responding if it spends 10 seconds with the system active
+	// not doing anything
+	if (state->client_connect_timer) {
+		loop_remove_timer(state->eventloop, state->client_connect_timer);
+	}
+	state->client_connect_timer = loop_add_timer(state->eventloop, 10000,
+		client_connection_timeout, state);
+	// We treat the client as "connected" when it makes a registry
+	wl_client_add_resource_created_listener(state->server.surf_client,
+		&state->client_resource_create_listener);
 
 	wl_client_add_destroy_listener(state->server.surf_client,
-				       &state->client_destroy_listener);
+		&state->client_destroy_listener);
 	return true;
+}
+
+static void client_resource_create(struct wl_listener *listener, void *data) {
+	struct swaylock_state *state = wl_container_of(listener, state, client_resource_create_listener);
+	struct wl_resource *resource = data;
+	if (wl_resource_get_client(resource) != state->server.surf_client) {
+		swaylock_log(LOG_ERROR, "Resource create callback does not match client");
+		return;
+	}
+
+	// TODO: use a more intelligent system based on the time needed
+	// to produce a buffer on request
+	state->client_nontrivial = true;
+	if (state->client_connect_timer) {
+		loop_remove_timer(state->eventloop, state->client_connect_timer);
+		state->client_connect_timer = NULL;
+	}
+
+	// Unregister this listener
+	wl_list_remove(&listener->link);
+	wl_list_init(&listener->link);
 }
 
 static void client_destroyed(struct wl_listener *listener, void *data) {
 	struct swaylock_state *state = wl_container_of(listener, state, client_destroy_listener);
 	struct wl_client *client = data;
-	(void)client;
-
-	/* As the old client crashed, it is probably buggy; therefore start
-	 * a known stable program instead. */
-	if (0) {
-		// TODO: develop failure detection methods
-		free(state->args.plugin_command);
-		state->args.plugin_command = strdup("swaybg -c '#5cc1ff'");
+	if (client != state->server.surf_client) {
+		swaylock_log(LOG_ERROR, "Client destroy callback does not match actual client");
+		return;
 	}
+	state->server.surf_client = NULL;
 
-	// todo handle failure
-	run_plugin_command(state);
+	// Restart the command, ONLY if it successfully did something the last time
+	// A one-shot program like wayland-info will still cycle indefinitely, so
+	// a better measure appears necessary
+	if (!state->client_nontrivial || !run_plugin_command(state)) {
+		setup_clientless_mode(state);
+	}
 }
 
 static void term_in(int fd, short mask, void *data) {
@@ -1951,14 +2059,15 @@ int main(int argc, char **argv) {
 		state.args.plugin_command = strdup(command);
 	}
 
+	state.eventloop = loop_create();
 	state.client_destroy_listener.notify = client_destroyed;
+	state.client_resource_create_listener.notify = client_resource_create;
 
 	// single fork-exec; we don't want the plugin to outlive us
 	if (!run_plugin_command(&state)) {
 		return EXIT_FAILURE;
 	}
 
-	state.eventloop = loop_create();
 	loop_add_fd(state.eventloop, wl_display_get_fd(state.display), POLLIN,
 			display_in, NULL);
 
@@ -1976,7 +2085,9 @@ int main(int argc, char **argv) {
 		if (wl_display_flush(state.display) == -1 && errno != EAGAIN) {
 			break;
 		}
-		wl_display_flush_clients(state.server.display);
+		if (state.server.display) {
+			wl_display_flush_clients(state.server.display);
+		}
 
 		loop_poll(state.eventloop);
 	}

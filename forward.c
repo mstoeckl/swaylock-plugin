@@ -321,10 +321,34 @@ static const struct wl_surface_interface surface_impl = {
 static void surface_handle_resource_destroy(struct wl_resource *resource) {
 	assert(wl_resource_instance_of(resource, &wl_surface_interface, &surface_impl));
 	struct forward_surface *fwd_surface = wl_resource_get_user_data(resource);
-	/* todo: proper cleanup */
 	if (fwd_surface->sway_surface) {
 		fwd_surface->sway_surface->plugin_surface = NULL;
 	}
+
+	struct wl_resource *cb_resource, *tmp;
+	wl_resource_for_each_safe(cb_resource, tmp, &fwd_surface->frame_callbacks) {
+		// the callback resource, on destruction, will try to remove itself,
+		// so set it up with an empty list (on which _remove() is safe)
+		wl_list_remove(wl_resource_get_link(cb_resource));
+		wl_list_init(wl_resource_get_link(cb_resource));
+	}
+	if (fwd_surface->pending.attachment
+			&& fwd_surface->pending.attachment != BUFFER_UNREACHABLE
+			&& fwd_surface->pending.attachment != BUFFER_COMMITTED) {
+		assert(fwd_surface->pending.attachment->resource != NULL);
+		wl_list_remove(&fwd_surface->pending.attachment_link);
+	}
+	if (fwd_surface->committed.attachment
+			&& fwd_surface->committed.attachment != BUFFER_UNREACHABLE
+			&& fwd_surface->committed.attachment != BUFFER_COMMITTED) {
+		assert(fwd_surface->committed.attachment->resource != NULL);
+		wl_list_remove(&fwd_surface->committed.attachment_link);
+	}
+
+	free(fwd_surface->buffer_damage);
+	free(fwd_surface->old_damage);
+	free(fwd_surface->serial_table);
+
 	free(fwd_surface);
 }
 

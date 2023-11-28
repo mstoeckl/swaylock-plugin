@@ -33,7 +33,7 @@ that has crashed. (For example, in Sway, by creating a `--locked` bindsym to kil
 restart swaylock-plugin; or by switching to a different virtual terminal, running
 `killall swaylock-plugin` and running swaylock-plugin, and restarting with e.g. `WAYLAND_DISPLAY=wayland-1 swaylock-plugin` .)
 
-See the man page, `swaylock-plugin(1)`, for instructions on using swaylock-plugin.
+See the man page, [`swaylock-plugin(1)`](swaylock.1.scd), for instructions on using swaylock-plugin.
 
 ## Installation
 

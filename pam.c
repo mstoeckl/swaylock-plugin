@@ -15,7 +15,7 @@ static char *pw_buf = NULL;
 void initialize_pw_backend(int argc, char **argv) {
 	if (getuid() != geteuid() || getgid() != getegid()) {
 		swaylock_log(LOG_ERROR,
-			"swaylock is setuid, but was compiled with the PAM"
+			"swaylock-plugin is setuid, but was compiled with the PAM"
 			" backend. Run 'chmod a-s %s' to fix. Aborting.", argv[0]);
 		exit(EXIT_FAILURE);
 	}
@@ -57,7 +57,7 @@ static const char *get_pam_auth_error(int pam_status) {
 	case PAM_AUTH_ERR:
 		return "invalid credentials";
 	case PAM_CRED_INSUFFICIENT:
-		return "swaylock cannot authenticate users; check /etc/pam.d/swaylock "
+		return "swaylock-plugin cannot authenticate users; check /etc/pam.d/swaylock-plugin "
 			"has been installed properly";
 	case PAM_AUTHINFO_UNAVAIL:
 		return "authentication information unavailable";
@@ -79,7 +79,7 @@ void run_pw_backend_child(void) {
 		.appdata_ptr = NULL,
 	};
 	pam_handle_t *auth_handle = NULL;
-	if (pam_start("swaylock", username, &conv, &auth_handle) != PAM_SUCCESS) {
+	if (pam_start("swaylock-plugin", username, &conv, &auth_handle) != PAM_SUCCESS) {
 		swaylock_log(LOG_ERROR, "pam_start failed");
 		exit(EXIT_FAILURE);
 	}

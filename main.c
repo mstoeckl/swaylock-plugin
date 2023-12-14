@@ -1903,12 +1903,16 @@ int main(int argc, char **argv) {
 
 	struct wl_registry *registry = wl_display_get_registry(state.display);
 	wl_registry_add_listener(registry, &registry_listener, &state);
-	wl_display_roundtrip(state.display);
 	state.forward.upstream_display = state.display;
 	state.forward.upstream_registry = registry;
 	wl_list_init(&state.forward.feedback_instances);
 	wl_list_init(&state.stale_wl_output_resources);
 	wl_list_init(&state.stale_xdg_output_resources);
+
+	if (wl_display_roundtrip(state.display) == -1) {
+		swaylock_log(LOG_ERROR, "wl_display_roundtrip() failed");
+		return EXIT_FAILURE;
+	}
 
 	if (!state.compositor) {
 		swaylock_log(LOG_ERROR, "Missing wl_compositor");

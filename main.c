@@ -188,6 +188,8 @@ static void create_surface(struct swaylock_surface *surface) {
 		wl_surface_set_opaque_region(surface->surface, region);
 		wl_region_destroy(region);
 	}
+
+	surface->created = true;
 }
 
 static void forward_configure(struct swaylock_surface *surface, bool first_configure, uint32_t serial) {
@@ -331,7 +333,10 @@ static void handle_wl_output_mode(void *data, struct wl_output *output,
 }
 
 static void handle_wl_output_done(void *data, struct wl_output *output) {
-	// Who cares
+	struct swaylock_surface *surface = data;
+	if (!surface->created && surface->state->run_display) {
+		create_surface(surface);
+	}
 }
 
 static void handle_wl_output_scale(void *data, struct wl_output *output,
@@ -578,11 +583,6 @@ static void handle_global(void *data, struct wl_registry *registry,
 		sprintf(tmp, "swaylock-%d", output_no);
 		surface->output_name = strdup(tmp);
 		surface->output_description = strdup("Generic output");
-
-		if (state->run_display) {
-			create_surface(surface);
-			wl_display_roundtrip(state->display);
-		}
 	} else if (strcmp(interface, ext_session_lock_manager_v1_interface.name) == 0) {
 		state->ext_session_lock_manager_v1 = wl_registry_bind(registry, name,
 				&ext_session_lock_manager_v1_interface, 1);

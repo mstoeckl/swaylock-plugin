@@ -64,7 +64,8 @@ void render_frame(struct swaylock_surface *surface) {
 	bool draw_indicator = state->args.show_indicator &&
 		(state->auth_state != AUTH_STATE_IDLE ||
 			state->input_state != INPUT_STATE_IDLE ||
-			state->args.indicator_idle_visible);
+			state->args.indicator_idle_visible) &&
+		 state->auth_state != AUTH_STATE_GRACE;
 
 	if (draw_indicator) {
 		if (state->input_state == INPUT_STATE_CLEAR) {

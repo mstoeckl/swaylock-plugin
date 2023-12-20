@@ -38,6 +38,17 @@ Locks your Wayland session.
 
 	Note: this is the default behavior of i3lock.
 
+*--grace* <seconds>
+	Only require a password after some grace period.
+
+	Note: Together with *--indicator*, the indicator is always shown.
+	Together with *--indicator-idle-visible*, the indicator is only shown
+	after the grace period.
+
+*--grace-no-mouse*
+	With *--grace*, only unlock as a response to a
+	key event, not in response to a mouse event.
+
 *-R, --ready-fd* <fd>
 	File descriptor to send readiness notifications to.
 

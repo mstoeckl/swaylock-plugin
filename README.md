@@ -63,3 +63,7 @@ On systems without PAM, you need to suid the swaylock-plugin binary:
     sudo chmod a+s /usr/local/bin/swaylock-plugin
 
 Swaylock will drop root permissions shortly after startup.
+
+## New Features
+
+* `--command <cmd>` to run a program which draws the background using wlr_layer_shell

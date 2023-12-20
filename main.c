@@ -968,7 +968,7 @@ static int parse_options(int argc, char **argv, struct swaylock_state *state,
 			"Sets the color of the text when verifying.\n"
 		"  --text-wrong-color <color>       "
 			"Sets the color of the text when invalid.\n"
-		"  --command <cmd>       "
+		"  --command <cmd>                  "
 			"Indicates which program to run to draw background.\n"
 		"\n"
 		"All <color> options are of the form <rrggbb[aa]>.\n";

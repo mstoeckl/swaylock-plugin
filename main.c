@@ -462,6 +462,9 @@ static void dmabuf_feedback_done(void *data,
 	forward->pending.tranches_len = 0;
 	if (forward->current.table_fd != -1) {
 		forward->pending.table_fd = dup(forward->current.table_fd);
+		if (!set_cloexec(forward->pending.table_fd)) {
+			swaylock_log(LOG_ERROR, "Failed to set cloexec for dmabuf fd");
+		}
 	}
 
 	/* notify all the client's feedback objects */

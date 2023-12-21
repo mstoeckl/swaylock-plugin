@@ -569,11 +569,8 @@ static void nested_dmabuf_params_add(struct wl_client *client,
 	zwp_linux_buffer_params_v1_add(params, fd, plane_idx, offset, stride, modifier_hi, modifier_lo);
 }
 static void nested_dmabuf_params_create(struct wl_client *client,
-	       struct wl_resource *resource,
-	       int32_t width,
-	       int32_t height,
-	       uint32_t format,
-	       uint32_t flags) {
+		struct wl_resource *resource, int32_t width, int32_t height,
+		uint32_t format, uint32_t flags) {
 	wl_client_post_implementation_error(client, "TODO IMPLEMENT CREATE");
 }
 static void nested_dmabuf_params_create_immed(struct wl_client *client,

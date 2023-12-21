@@ -1776,6 +1776,12 @@ static bool run_plugin_command(struct swaylock_state *state) {
 		swaylock_log(LOG_ERROR, "Failed to create socket pair for background plugin");
 		return false;
 	}
+	if (!set_cloexec(sockpair[1])) {
+		close(sockpair[0]);
+		close(sockpair[1]);
+		swaylock_log(LOG_ERROR, "Failed to set close-on-exec for local socket end");
+		return false;
+	}
 
 	printf("Running command: %s\n", state->args.plugin_command);
 	if (!spawn_command(state, sockpair[0], sockpair[1])) {

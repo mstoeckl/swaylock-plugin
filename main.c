@@ -6,6 +6,7 @@
 #include <getopt.h>
 #include <poll.h>
 #include <signal.h>
+#include <spawn.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -40,6 +41,8 @@
 static void bind_wl_output(struct wl_client *client, void *data,
 		uint32_t version, uint32_t id);
 static void render_fallback_surface(struct swaylock_surface *surface);
+
+extern char **environ;
 
 static uint32_t parse_color(const char *color) {
 	if (color[0] == '#') {
@@ -1687,6 +1690,74 @@ static void client_connection_timeout(void *data) {
 	setup_clientless_mode(state);
 }
 
+static bool spawn_command(struct swaylock_state *state, int sock_child, int sock_local) {
+	// TODO: set cloexec for more file descriptors!
+	// TODO: reap children, if necessary
+	posix_spawn_file_actions_t actions;
+	if (posix_spawn_file_actions_init(&actions) == -1) {
+		swaylock_log(LOG_ERROR, "Failed to initialize file actions");
+		return false;
+	}
+	if (posix_spawn_file_actions_addclose(&actions, sock_local) == -1) {
+		posix_spawn_file_actions_destroy(&actions);
+		swaylock_log(LOG_ERROR, "Failed to update file actions");
+		return false;
+	}
+
+	size_t envlen = 0;
+	while (environ[envlen]) {
+		envlen++;
+	}
+	char **prog_envp = calloc(envlen + 2, sizeof(char *));
+	if (!prog_envp) {
+		posix_spawn_file_actions_destroy(&actions);
+		swaylock_log(LOG_ERROR, "Failed to allocate new environ");
+		return false;
+	}
+	size_t j = 0;
+	for (size_t i = 0; i < envlen; i++) {
+		// removing WAYLAND_DEBUG avoids confusion between debug logs;
+		// alas, the default debug log does not distinguish programs :-(
+		const char skip1[] = "WAYLAND_DEBUG";
+		const char skip2[] = "WAYLAND_DISPLAY";
+		const char skip3[] = "WAYLAND_SOCKET";
+		if (strncmp(environ[i], skip1, sizeof(skip1) - 1) == 0) {
+			continue;
+		}
+		if (strncmp(environ[i], skip2, sizeof(skip2) - 1) == 0) {
+			continue;
+		}
+		if (strncmp(environ[i], skip3, sizeof(skip3) - 1) == 0) {
+			continue;
+		}
+
+		prog_envp[j++] = environ[i];
+	}
+	char sock_env[32];
+	snprintf(sock_env, sizeof(sock_env), "WAYLAND_SOCKET=%d", sock_child);
+	prog_envp[j++] = sock_env;
+	prog_envp[j++] = NULL;
+
+	char *prog_argv[] = {
+		"sh", "-c", state->args.plugin_command, NULL
+	};
+
+	// Use posix_spawnp to spawn program. This is rather awkward to do,
+	// but can be significantly more efficient than fork()+exec()
+	pid_t pid;
+	if (posix_spawnp(&pid, "sh", &actions, NULL, prog_argv, prog_envp) == -1) {
+		swaylock_log(LOG_ERROR, "Failed to forkspawn background plugin: %s", strerror(errno));
+		free(prog_envp);
+		posix_spawn_file_actions_destroy(&actions);
+		return false;
+	}
+	posix_spawn_file_actions_destroy(&actions);
+	free(prog_envp);
+
+	fprintf(stderr, "Forked background plugin: %d\n", pid);
+	return true;
+}
+
 static bool run_plugin_command(struct swaylock_state *state) {
 	int sockpair[2];
 	if (socketpair(AF_UNIX, SOCK_STREAM, 0, sockpair) == -1) {
@@ -1695,27 +1766,9 @@ static bool run_plugin_command(struct swaylock_state *state) {
 	}
 
 	printf("Running command: %s\n", state->args.plugin_command);
-
-	// todo: it should be possible to use posix_spawn
-	pid_t pid = fork();
-	if (pid == 0) {
+	if (!spawn_command(state, sockpair[0], sockpair[1])) {
+		close(sockpair[0]);
 		close(sockpair[1]);
-
-		fprintf(stderr, "Forked background plugin: %d\n", getpid());
-		char wayland_socket_str[16];
-		snprintf(wayland_socket_str, sizeof(wayland_socket_str),
-				"%d", sockpair[0]);
-		setenv("WAYLAND_SOCKET", wayland_socket_str, true);
-		unsetenv("WAYLAND_DISPLAY");
-		// this avoids confusion between debug logs; alas, the default
-		// debug log does not distinguish programs :-(
-		unsetenv("WAYLAND_DEBUG");
-
-		execlp("sh", "sh", "-c", state->args.plugin_command, NULL);
-		swaylock_log(LOG_ERROR, "Failed to execlp");
-		return false;
-	} else if (pid == -1) {
-		swaylock_log(LOG_ERROR, "Failed to forkspawn background plugin");
 		return false;
 	}
 	close(sockpair[0]);

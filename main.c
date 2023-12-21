@@ -1950,6 +1950,10 @@ int main(int argc, char **argv) {
 		swaylock_log(LOG_ERROR, "Failed to pipe");
 		return EXIT_FAILURE;
 	}
+	if (!set_cloexec(sigusr_fds[0]) || !set_cloexec(sigusr_fds[1])) {
+		swaylock_log(LOG_ERROR, "Failed to make pipes close-on-exec");
+		return EXIT_FAILURE;
+	}
 	if (fcntl(sigusr_fds[1], F_SETFL, O_NONBLOCK) == -1) {
 		swaylock_log(LOG_ERROR, "Failed to make pipe end nonblocking");
 		return EXIT_FAILURE;

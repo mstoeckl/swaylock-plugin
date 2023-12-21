@@ -53,6 +53,17 @@ bool spawn_comm_child(void) {
 	}
 	if (pipe(comm[1]) != 0) {
 		swaylock_log_errno(LOG_ERROR, "failed to create pipe");
+		close(comm[0][0]);
+		close(comm[0][1]);
+		return false;
+	}
+	if (!set_cloexec(comm[0][0]) || !set_cloexec(comm[0][1]) ||
+			!set_cloexec(comm[1][0]) || !set_cloexec(comm[1][1])) {
+		swaylock_log_errno(LOG_ERROR, "failed to set cloexec");
+		close(comm[0][0]);
+		close(comm[0][1]);
+		close(comm[1][0]);
+		close(comm[1][1]);
 		return false;
 	}
 	pid_t child = fork();

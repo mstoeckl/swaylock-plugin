@@ -62,6 +62,18 @@ static uint32_t parse_color(const char *color) {
 	return res;
 }
 
+bool set_cloexec(int fd) {
+	int flags = fcntl(fd, F_GETFD);
+	if (flags == -1) {
+		return false;
+	}
+	flags = flags | FD_CLOEXEC;
+	if (fcntl(fd, F_SETFD, flags) == -1) {
+		return false;
+	}
+	return true;
+}
+
 int lenient_strcmp(char *a, char *b) {
 	if (a == b) {
 		return 0;

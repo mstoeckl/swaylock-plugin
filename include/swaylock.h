@@ -339,4 +339,7 @@ void initialize_pw_backend(int argc, char **argv);
 void run_pw_backend_child(void);
 void clear_buffer(char *buf, size_t size);
 
+/* Returns false if it fails to set the close-on-exec flag for `fd` */
+bool set_cloexec(int fd);
+
 #endif

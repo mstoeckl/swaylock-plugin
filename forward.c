@@ -525,6 +525,7 @@ static void shm_create_pool(struct wl_client *client, struct wl_resource *resour
 	struct wl_resource *pool_resource = wl_resource_create(client, &wl_shm_pool_interface,
 		wl_resource_get_version(resource), id);
 	if (pool_resource == NULL) {
+		close(fd);
 		wl_client_post_no_memory(client);
 		return;
 	}
@@ -532,6 +533,7 @@ static void shm_create_pool(struct wl_client *client, struct wl_resource *resour
 	struct forward_state *server = wl_resource_get_user_data(resource);
 	struct wl_shm *shm = server->shm;
 	struct wl_shm_pool *shm_pool = wl_shm_create_pool(shm, fd, size);
+	close(fd);
 
 	wl_resource_set_implementation(pool_resource, &shm_pool_impl,
 		shm_pool, shm_pool_handle_resource_destroy);

@@ -38,9 +38,14 @@
 
 #define WL_OUTPUT_MM_PER_PIX 0.264
 #define WL_OUTPUT_VERSION 4
+
+#define TIMEOUT_CONNECT 5000
+#define TIMEOUT_SURFACE 10000
+
 static void bind_wl_output(struct wl_client *client, void *data,
 		uint32_t version, uint32_t id);
 static void render_fallback_surface(struct swaylock_surface *surface);
+static void output_redraw_timeout(void *data);
 
 extern char **environ;
 
@@ -144,7 +149,9 @@ static void destroy_surface(struct swaylock_surface *surface) {
 			wl_list_insert(&state->stale_wl_output_resources, wl_resource_get_link(output));
 		}
 	}
-
+	if (surface->client_submission_timer) {
+		loop_remove_timer(state->eventloop, surface->client_submission_timer);
+	}
 	if (surface->ext_session_lock_surface_v1 != NULL) {
 		ext_session_lock_surface_v1_destroy(surface->ext_session_lock_surface_v1);
 	}
@@ -252,6 +259,7 @@ static void ext_session_lock_surface_v1_handle_configure(void *data,
 		uint32_t width, uint32_t height) {
 	struct swaylock_surface *surface = data;
 	bool first_configure = surface->width <= 0 || surface->height <= 0;
+	bool size_change = surface->width != width || surface->height != height;
 	surface->width = width;
 	surface->height = height;
 	/* Quoting the spec:
@@ -272,6 +280,16 @@ static void ext_session_lock_surface_v1_handle_configure(void *data,
 	}
 	if (surface->has_buffer) {
 		render_frame(surface);
+	}
+	if (size_change && !first_configure) {
+		// Only start timer if the old one has entirely elapsed.
+		// todo: eventually launch timers for every-configure that
+		// needs an update. Problem: do noop-configures or reverted
+		// configures need acknowledgement?
+		if (!surface->client_submission_timer) {
+			surface->client_submission_timer = loop_add_timer(surface->state->eventloop,
+				TIMEOUT_SURFACE, output_redraw_timeout, surface);
+		}
 	}
 }
 
@@ -601,6 +619,10 @@ static void handle_global(void *data, struct wl_registry *registry,
 		sprintf(tmp, "swaylock-%d", output_no);
 		surface->output_name = strdup(tmp);
 		surface->output_description = strdup("Generic output");
+
+		// Plugin should provide a surface quickly enough
+		surface->client_submission_timer = loop_add_timer(state->eventloop,
+			TIMEOUT_SURFACE, output_redraw_timeout, surface);
 	} else if (strcmp(interface, ext_session_lock_manager_v1_interface.name) == 0) {
 		state->ext_session_lock_manager_v1 = wl_registry_bind(registry, name,
 				&ext_session_lock_manager_v1_interface, 1);
@@ -1689,12 +1711,11 @@ static void setup_clientless_mode(struct swaylock_state *state) {
 	}
 
 }
-static void client_connection_timeout(void *data) {
-	struct swaylock_state *state = data;
-	swaylock_log(LOG_ERROR, "Client connection timed out; falling back to a client-less mode");
 
+
+static void client_timeout(struct swaylock_state *state) {
 	if (!state->server.surf_client) {
-		swaylock_log(LOG_ERROR, "Somehow had a client timeout despite client being destroyed");
+		swaylock_log(LOG_ERROR, "Timeout already occurred, ignoring");
 		return;
 	}
 
@@ -1704,6 +1725,41 @@ static void client_connection_timeout(void *data) {
 
 	setup_clientless_mode(state);
 }
+
+static void client_connection_timeout(void *data) {
+	struct swaylock_state *state = data;
+	// The event loop frees the timer object, so clean up
+	state->client_connect_timer = NULL;
+
+	if (!state->server.surf_client) {
+		swaylock_log(LOG_DEBUG, "Original client connection timed out");
+		return;
+	} else {
+		swaylock_log(LOG_ERROR, "Client connection timed out; falling back to a client-less mode");
+	}
+
+	client_timeout(state);
+}
+
+static void output_redraw_timeout(void *data) {
+	struct swaylock_surface *surface = data;
+	// The event loop frees the timer object, so clean up
+	surface->client_submission_timer = NULL;
+
+	if (!surface->state->server.surf_client) {
+		swaylock_log(LOG_DEBUG,
+			"Original client failed to redraw output %d in time",
+			surface->output_global_name);
+		return;
+	} else {
+		swaylock_log(LOG_ERROR,
+			"Client failed to redraw output %d in time; falling back to a client-less mode",
+			surface->output_global_name);
+	}
+
+	client_timeout(surface->state);
+}
+
 
 static bool spawn_command(struct swaylock_state *state, int sock_child, int sock_local) {
 	// TODO: set cloexec for more file descriptors!
@@ -1803,8 +1859,9 @@ static bool run_plugin_command(struct swaylock_state *state) {
 	if (state->client_connect_timer) {
 		loop_remove_timer(state->eventloop, state->client_connect_timer);
 	}
-	state->client_connect_timer = loop_add_timer(state->eventloop, 10000,
-		client_connection_timeout, state);
+	state->client_connect_timer = loop_add_timer(state->eventloop,
+		TIMEOUT_CONNECT, client_connection_timeout, state);
+
 	// We treat the client as "connected" when it makes a registry
 	wl_client_add_resource_created_listener(state->server.surf_client,
 		&state->client_resource_create_listener);
@@ -1967,6 +2024,8 @@ int main(int argc, char **argv) {
 		swaylock_log(LOG_ERROR, "Failed to make pipe end nonblocking");
 		return EXIT_FAILURE;
 	}
+
+	state.eventloop = loop_create();
 
 	wl_list_init(&state.surfaces);
 	state.xkb.context = xkb_context_new(XKB_CONTEXT_NO_FLAGS);
@@ -2145,7 +2204,6 @@ int main(int argc, char **argv) {
 		state.args.plugin_command = strdup(command);
 	}
 
-	state.eventloop = loop_create();
 	state.client_destroy_listener.notify = client_destroyed;
 	state.client_resource_create_listener.notify = client_resource_create;
 

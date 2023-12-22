@@ -246,7 +246,9 @@ struct swaylock_state {
 	struct forward_state forward;
 	struct swaylock_bg_server server;
 	bool client_nontrivial; // did client even create the wl_registry resource?
-	struct loop_timer *client_connect_timer; // timer to give up on client connecting
+	/* Timer after which to give up on a non-connecting client. It is
+	 * important to verify this, as there may not be any outputs */
+	struct loop_timer *client_connect_timer;
 	struct wl_listener client_resource_create_listener;
 	struct wl_listener client_destroy_listener;
 
@@ -294,6 +296,14 @@ struct swaylock_surface {
 
 	/* has a buffer been attached and committed */
 	bool has_buffer;
+
+	/* Timer to verify if the client submits surfaces promptly.
+	 * (To be fully accurate, it would be better to launch a unique timer
+	 * every time the compositor resizes this surface, and then have the
+	 * client defuse all timers preceding the serial of its last
+	 * acknowledgement with associated valid surface submission.
+	 */
+	struct loop_timer *client_submission_timer;
 };
 
 /* Forwarding interface. These create various resources which maintain an

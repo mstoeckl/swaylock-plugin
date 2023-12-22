@@ -1,6 +1,7 @@
 #include "swaylock.h"
 
 #include "log.h"
+#include "loop.h"
 
 #include <wayland-client-core.h>
 #include <wayland-client-protocol.h>
@@ -271,6 +272,13 @@ static void nested_surface_commit(struct wl_client *client,
 		 * the gap between ack and commit from the plugin */
 		ext_session_lock_surface_v1_ack_configure(sw_surf->ext_session_lock_surface_v1, sw_surf->pending_upstream_serial);
 		sw_surf->has_pending_ack_conf = false;
+	}
+
+	if (sw_surf->client_submission_timer) {
+		/* Disarm timer, indicating that plugin have responded on time
+		 * for this output. */
+		loop_remove_timer(sw_surf->state->eventloop, sw_surf->client_submission_timer);
+		sw_surf->client_submission_timer = NULL;
 	}
 
 	wl_surface_commit(background);

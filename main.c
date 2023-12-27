@@ -244,8 +244,7 @@ static void forward_configure(struct swaylock_surface *surface, bool first_confi
 			/* reconfigure plugin surface with new size */
 			if (surface->plugin_surface->has_been_configured) {
 				/* wait until the first commit/configure cycle is over */
-				struct wl_display *plugin_display = surface->state->server.display;
-				uint32_t plugin_serial = wl_display_next_serial(plugin_display);
+				uint32_t plugin_serial = surface->client->serial++;
 				add_serial_pair(surface->plugin_surface, serial, plugin_serial, false);
 				zwlr_layer_surface_v1_send_configure(surface->plugin_surface->layer_surface,
 								     plugin_serial,
@@ -1633,6 +1632,10 @@ void wlr_layer_shell_get_layer_surface(struct wl_client *client,
 	sw_surface->plugin_surface = surf;
 	surf->sway_surface = sw_surface;
 
+	/* consume a serial, and do not reveal it to the client, for the purpose
+	 * of ensuring this value is unique. todo: simpler solution */
+	surf->last_used_plugin_serial = sw_surface->client->serial++;
+
 	/* now, create the object that was asked for */
 	struct wl_resource *layer_surface_resource = wl_resource_create(client,
 		&zwlr_layer_surface_v1_interface, wl_resource_get_version(resource), id);
@@ -1901,7 +1904,7 @@ static bool run_plugin_command(struct swaylock_state *state) {
 	}
 	wl_list_insert(&state->server.clients, &bg_client->link);
 	bg_client->state = state;
-	bg_client->serial = 1000;
+	bg_client->serial = 100000;
 	bg_client->client = wl_client_create(state->server.display, sockpair[1]);
 
 	bg_client->made_a_registry = false;

@@ -147,7 +147,8 @@ static void nested_surface_commit(struct wl_client *client,
 
 	if (!surface->has_been_configured) {
 		/* send initial configure */
-		uint32_t plugin_serial = wl_display_next_serial(wl_client_get_display(client));
+		struct swaylock_bg_client *bg_client = surface->sway_surface->client;
+		uint32_t plugin_serial = bg_client->serial++;
 
 		if (surface->sway_surface->width == 0 || surface->sway_surface->height == 0) {
 			swaylock_log(LOG_ERROR, "committing nested surface before main surface dimensions known");
@@ -377,10 +378,6 @@ static void compositor_create_surface(struct wl_client *client,
 		return;
 	}
 	wl_list_init(&fwd_surface->frame_callbacks);
-	struct wl_display *display = wl_client_get_display(client);
-	/* consume a serial, and do not reveal it to the client, for the purpose
-	 * of ensuring this value is unique. todo: simpler solution */
-	fwd_surface->last_used_plugin_serial = wl_display_next_serial(display);
 
 	wl_resource_set_implementation(surf_resource, &surface_impl,
 		fwd_surface, surface_handle_resource_destroy);

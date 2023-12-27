@@ -1758,8 +1758,6 @@ static void output_redraw_timeout(void *data) {
 
 
 static bool spawn_command(struct swaylock_state *state, int sock_child, int sock_local) {
-	// TODO: set cloexec for more file descriptors!
-	// TODO: reap children, if necessary
 	posix_spawn_file_actions_t actions;
 	if (posix_spawn_file_actions_init(&actions) == -1) {
 		swaylock_log(LOG_ERROR, "Failed to initialize file actions");
@@ -1821,7 +1819,7 @@ static bool spawn_command(struct swaylock_state *state, int sock_child, int sock
 	posix_spawn_file_actions_destroy(&actions);
 	free(prog_envp);
 
-	fprintf(stderr, "Forked background plugin: %d\n", pid);
+	fprintf(stderr, "Forked background plugin (pid = %d): %s\n", pid, state->args.plugin_command);
 	return true;
 }
 
@@ -1889,10 +1887,10 @@ static bool run_plugin_command(struct swaylock_state *state) {
 		return false;
 	}
 
-	printf("Running command: %s\n", state->args.plugin_command);
 	if (!spawn_command(state, sockpair[0], sockpair[1])) {
 		close(sockpair[0]);
 		close(sockpair[1]);
+		printf("Failed to run command: %s\n", state->args.plugin_command);
 		return false;
 	}
 	close(sockpair[0]);

@@ -81,6 +81,24 @@ struct swaylock_password {
 	char *buffer;
 };
 
+struct swaylock_bg_client {
+	struct swaylock_state *state;
+
+	/* Provide per-client serials, as serials get remapped anyway */
+	uint32_t serial;
+	struct wl_client *client;
+
+	bool made_a_registry; // did client even create the wl_registry resource?
+	/* Timer after which to give up on a non-connecting client. It is
+	 * important to verify this, as there may not be any outputs */
+	struct loop_timer *client_connect_timer;
+	struct wl_listener client_resource_create_listener;
+	struct wl_listener client_destroy_listener;
+
+	/* For swaylock_bg_server::clients */
+	struct wl_list link;
+};
+
 // for the plugin-based surface drawing
 struct swaylock_bg_server {
 	struct wl_display *display;
@@ -92,7 +110,7 @@ struct swaylock_bg_server {
 	struct wl_global *zwp_linux_dmabuf;
 	struct wl_global *drm;
 
-	struct wl_client *surf_client;
+	struct wl_list clients;
 };
 
 struct dmabuf_modifier_pair {
@@ -245,12 +263,6 @@ struct swaylock_state {
 	struct zxdg_output_manager_v1 *zxdg_output_manager;
 	struct forward_state forward;
 	struct swaylock_bg_server server;
-	bool client_nontrivial; // did client even create the wl_registry resource?
-	/* Timer after which to give up on a non-connecting client. It is
-	 * important to verify this, as there may not be any outputs */
-	struct loop_timer *client_connect_timer;
-	struct wl_listener client_resource_create_listener;
-	struct wl_listener client_destroy_listener;
 
 	// for nested server, output was destroyed
 	struct wl_list stale_wl_output_resources;
@@ -296,6 +308,9 @@ struct swaylock_surface {
 
 	/* has a buffer been attached and committed */
 	bool has_buffer;
+
+	/* The client which provides surfaces for this surface */
+	struct swaylock_bg_client *client;
 
 	/* Timer to verify if the client submits surfaces promptly.
 	 * (To be fully accurate, it would be better to launch a unique timer

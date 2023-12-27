@@ -46,6 +46,7 @@ static void bind_wl_output(struct wl_client *client, void *data,
 		uint32_t version, uint32_t id);
 static void render_fallback_surface(struct swaylock_surface *surface);
 static void output_redraw_timeout(void *data);
+static bool run_plugin_command(struct swaylock_state *state);
 
 extern char **environ;
 
@@ -1713,32 +1714,24 @@ static void setup_clientless_mode(struct swaylock_state *state) {
 }
 
 
-static void client_timeout(struct swaylock_state *state) {
-	if (!state->server.surf_client) {
-		swaylock_log(LOG_ERROR, "Timeout already occurred, ignoring");
-		return;
-	}
+static void client_timeout(struct swaylock_bg_client *bg_client) {
+	wl_list_remove(&bg_client->client_destroy_listener.link);
 
-	wl_list_remove(&state->client_destroy_listener.link);
-	wl_client_destroy(state->server.surf_client);
-	state->server.surf_client = NULL;
+	struct swaylock_state *state = bg_client->state;
+
+	// Destroying the client will free the bg_client
+	wl_client_destroy(bg_client->client);
 
 	setup_clientless_mode(state);
 }
 
 static void client_connection_timeout(void *data) {
-	struct swaylock_state *state = data;
+	struct swaylock_bg_client *bg_client = data;
 	// The event loop frees the timer object, so clean up
-	state->client_connect_timer = NULL;
+	bg_client->client_connect_timer = NULL;
 
-	if (!state->server.surf_client) {
-		swaylock_log(LOG_DEBUG, "Original client connection timed out");
-		return;
-	} else {
-		swaylock_log(LOG_ERROR, "Client connection timed out; falling back to a client-less mode");
-	}
-
-	client_timeout(state);
+	swaylock_log(LOG_ERROR, "Client connection timed out; falling back to a client-less mode");
+	client_timeout(bg_client);
 }
 
 static void output_redraw_timeout(void *data) {
@@ -1746,7 +1739,7 @@ static void output_redraw_timeout(void *data) {
 	// The event loop frees the timer object, so clean up
 	surface->client_submission_timer = NULL;
 
-	if (!surface->state->server.surf_client) {
+	if (!surface->client) {
 		swaylock_log(LOG_DEBUG,
 			"Original client failed to redraw output %d in time",
 			surface->output_global_name);
@@ -1757,7 +1750,7 @@ static void output_redraw_timeout(void *data) {
 			surface->output_global_name);
 	}
 
-	client_timeout(surface->state);
+	client_timeout(surface->client);
 }
 
 
@@ -1829,6 +1822,57 @@ static bool spawn_command(struct swaylock_state *state, int sock_child, int sock
 	return true;
 }
 
+static void client_resource_create(struct wl_listener *listener, void *data) {
+	struct swaylock_bg_client *bg_client = wl_container_of(listener, bg_client, client_resource_create_listener);
+	struct wl_resource *resource = data;
+	if (wl_resource_get_client(resource) != bg_client->client) {
+		swaylock_log(LOG_ERROR, "Resource create callback does not match client");
+		return;
+	}
+
+	// TODO: use a more intelligent system based on the time needed
+	// to produce a buffer on request
+	bg_client->made_a_registry = true;
+	if (bg_client->client_connect_timer) {
+		loop_remove_timer(bg_client->state->eventloop, bg_client->client_connect_timer);
+		bg_client->client_connect_timer = NULL;
+	}
+
+	// Unregister this listener
+	wl_list_remove(&listener->link);
+	wl_list_init(&listener->link);
+}
+
+static void client_destroyed(struct wl_listener *listener, void *data) {
+	struct swaylock_bg_client *bg_client = wl_container_of(listener, bg_client, client_destroy_listener);
+	struct wl_client *client = data;
+	if (client != bg_client->client) {
+		swaylock_log(LOG_ERROR, "Client destroy callback does not match actual client");
+		return;
+	}
+	wl_list_remove(&bg_client->link);
+
+	if (bg_client->client_connect_timer) {
+		loop_remove_timer(bg_client->state->eventloop, bg_client->client_connect_timer);
+	}
+
+	bool made_a_registry = bg_client->made_a_registry;
+	struct swaylock_state *state = bg_client->state;
+	free(bg_client);
+
+	struct swaylock_surface *surface;
+	wl_list_for_each(surface, &state->surfaces, link) {
+		surface->client = NULL;
+	}
+
+	// Restart the command, ONLY if it successfully did something the last time
+	// A one-shot program like wayland-info will still cycle indefinitely, so
+	// a better measure appears necessary
+	if (!made_a_registry || !run_plugin_command(state)) {
+		setup_clientless_mode(state);
+	}
+}
+
 static bool run_plugin_command(struct swaylock_state *state) {
 	int sockpair[2];
 	if (socketpair(AF_UNIX, SOCK_STREAM, 0, sockpair) == -1) {
@@ -1849,65 +1893,44 @@ static bool run_plugin_command(struct swaylock_state *state) {
 		return false;
 	}
 	close(sockpair[0]);
-	state->server.surf_client = wl_client_create(state->server.display, sockpair[1]);
-	state->client_nontrivial = false;
+
+	struct swaylock_bg_client *bg_client = calloc(1, sizeof(struct swaylock_bg_client));
+	if (!bg_client) {
+		close(sockpair[1]);
+		return false;
+	}
+	wl_list_insert(&state->server.clients, &bg_client->link);
+	bg_client->state = state;
+	bg_client->serial = 1000;
+	bg_client->client = wl_client_create(state->server.display, sockpair[1]);
+
+	bg_client->made_a_registry = false;
 
 	// Note: the timers added here use CLOCK_MONOTONIC, which on Linux does not
 	// count time in a suspended state; the callback will only mark the client
 	// as broken/not responding if it spends 10 seconds with the system active
 	// not doing anything
-	if (state->client_connect_timer) {
-		loop_remove_timer(state->eventloop, state->client_connect_timer);
-	}
-	state->client_connect_timer = loop_add_timer(state->eventloop,
-		TIMEOUT_CONNECT, client_connection_timeout, state);
+	bg_client->client_connect_timer = loop_add_timer(state->eventloop,
+		TIMEOUT_CONNECT, client_connection_timeout, bg_client);
+
+	bg_client->client_destroy_listener.notify = client_destroyed;
+	bg_client->client_resource_create_listener.notify = client_resource_create;
 
 	// We treat the client as "connected" when it makes a registry
-	wl_client_add_resource_created_listener(state->server.surf_client,
-		&state->client_resource_create_listener);
+	wl_client_add_resource_created_listener(bg_client->client,
+		&bg_client->client_resource_create_listener);
 
-	wl_client_add_destroy_listener(state->server.surf_client,
-		&state->client_destroy_listener);
+	wl_client_add_destroy_listener(bg_client->client,
+		&bg_client->client_destroy_listener);
+
+	struct swaylock_surface *surface;
+	wl_list_for_each(surface, &state->surfaces, link) {
+		surface->client = bg_client;
+	}
+
 	return true;
 }
 
-static void client_resource_create(struct wl_listener *listener, void *data) {
-	struct swaylock_state *state = wl_container_of(listener, state, client_resource_create_listener);
-	struct wl_resource *resource = data;
-	if (wl_resource_get_client(resource) != state->server.surf_client) {
-		swaylock_log(LOG_ERROR, "Resource create callback does not match client");
-		return;
-	}
-
-	// TODO: use a more intelligent system based on the time needed
-	// to produce a buffer on request
-	state->client_nontrivial = true;
-	if (state->client_connect_timer) {
-		loop_remove_timer(state->eventloop, state->client_connect_timer);
-		state->client_connect_timer = NULL;
-	}
-
-	// Unregister this listener
-	wl_list_remove(&listener->link);
-	wl_list_init(&listener->link);
-}
-
-static void client_destroyed(struct wl_listener *listener, void *data) {
-	struct swaylock_state *state = wl_container_of(listener, state, client_destroy_listener);
-	struct wl_client *client = data;
-	if (client != state->server.surf_client) {
-		swaylock_log(LOG_ERROR, "Client destroy callback does not match actual client");
-		return;
-	}
-	state->server.surf_client = NULL;
-
-	// Restart the command, ONLY if it successfully did something the last time
-	// A one-shot program like wayland-info will still cycle indefinitely, so
-	// a better measure appears necessary
-	if (!state->client_nontrivial || !run_plugin_command(state)) {
-		setup_clientless_mode(state);
-	}
-}
 
 static void term_in(int fd, short mask, void *data) {
 	state.run_display = false;
@@ -2045,6 +2068,7 @@ int main(int argc, char **argv) {
 	wl_list_init(&state.forward.feedback_instances);
 	wl_list_init(&state.stale_wl_output_resources);
 	wl_list_init(&state.stale_xdg_output_resources);
+	wl_list_init(&state.server.clients);
 
 	if (wl_display_roundtrip(state.display) == -1) {
 		swaylock_log(LOG_ERROR, "wl_display_roundtrip() failed");
@@ -2203,9 +2227,6 @@ int main(int argc, char **argv) {
 		// todo: build more complicated swaybg command
 		state.args.plugin_command = strdup(command);
 	}
-
-	state.client_destroy_listener.notify = client_destroyed;
-	state.client_resource_create_listener.notify = client_resource_create;
 
 	// single fork-exec; we don't want the plugin to outlive us
 	if (!run_plugin_command(&state)) {

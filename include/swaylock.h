@@ -73,6 +73,7 @@ struct swaylock_args {
 	int ready_fd;
 	bool indicator_idle_visible;
 	char *plugin_command;
+	bool plugin_per_output;
 };
 
 struct swaylock_password {
@@ -87,6 +88,10 @@ struct swaylock_bg_client {
 	/* Provide per-client serials, as serials get remapped anyway */
 	uint32_t serial;
 	struct wl_client *client;
+
+	/* If NULL, this client applies to all outputs; otherwise, to the
+	 * specific output indicated. */
+	struct swaylock_surface *unique_output;
 
 	bool made_a_registry; // did client even create the wl_registry resource?
 	/* Timer after which to give up on a non-connecting client. It is

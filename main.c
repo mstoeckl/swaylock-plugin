@@ -46,7 +46,8 @@ static void bind_wl_output(struct wl_client *client, void *data,
 		uint32_t version, uint32_t id);
 static void render_fallback_surface(struct swaylock_surface *surface);
 static void output_redraw_timeout(void *data);
-static bool run_plugin_command(struct swaylock_state *state);
+static bool run_plugin_command(struct swaylock_state *state, struct swaylock_surface *output);
+static void setup_clientless_mode(struct swaylock_state *state);
 
 extern char **environ;
 
@@ -247,7 +248,7 @@ static void forward_configure(struct swaylock_surface *surface, bool first_confi
 				uint32_t plugin_serial = surface->client->serial++;
 				add_serial_pair(surface->plugin_surface, serial, plugin_serial, false);
 				zwlr_layer_surface_v1_send_configure(surface->plugin_surface->layer_surface,
-								     plugin_serial,
+						plugin_serial,
 					surface->width, surface->height);
 			}
 		}
@@ -623,6 +624,14 @@ static void handle_global(void *data, struct wl_registry *registry,
 		// Plugin should provide a surface quickly enough
 		surface->client_submission_timer = loop_add_timer(state->eventloop,
 			TIMEOUT_SURFACE, output_redraw_timeout, surface);
+
+		if (state->args.plugin_per_output) {
+			if (!run_plugin_command(state, surface)) {
+				setup_clientless_mode(state);
+			}
+		}
+
+
 	} else if (strcmp(interface, ext_session_lock_manager_v1_interface.name) == 0) {
 		state->ext_session_lock_manager_v1 = wl_registry_bind(registry, name,
 				&ext_session_lock_manager_v1_interface, 1);
@@ -828,6 +837,7 @@ static int parse_options(int argc, char **argv, struct swaylock_state *state,
 		LO_TEXT_VER_COLOR,
 		LO_TEXT_WRONG_COLOR,
 		LO_PLUGIN_COMMAND,
+		LO_PLUGIN_COMMAND_EACH,
 	};
 
 	static struct option long_options[] = {
@@ -886,6 +896,7 @@ static int parse_options(int argc, char **argv, struct swaylock_state *state,
 		{"text-ver-color", required_argument, NULL, LO_TEXT_VER_COLOR},
 		{"text-wrong-color", required_argument, NULL, LO_TEXT_WRONG_COLOR},
 		{"command", required_argument, NULL, LO_PLUGIN_COMMAND},
+		{"command-each", required_argument, NULL, LO_PLUGIN_COMMAND_EACH},
 		{0, 0, 0, 0}
 	};
 
@@ -1009,7 +1020,9 @@ static int parse_options(int argc, char **argv, struct swaylock_state *state,
 		"  --text-wrong-color <color>       "
 			"Sets the color of the text when invalid.\n"
 		"  --command <cmd>                  "
-			"Indicates which program to run to draw background.\n"
+			"Indicates which program to run to draw backgrounds.\n"
+		"  --command-each <cmd>             "
+			"Like --command, but program is run once for each output\n"
 		"\n"
 		"All <color> options are of the form <rrggbb[aa]>.\n";
 
@@ -1295,6 +1308,14 @@ static int parse_options(int argc, char **argv, struct swaylock_state *state,
 			if (state) {
 				free(state->args.plugin_command);
 				state->args.plugin_command = strdup(optarg);
+				state->args.plugin_per_output = false;
+			}
+			break;
+		case LO_PLUGIN_COMMAND_EACH:
+			if (state) {
+				free(state->args.plugin_command);
+				state->args.plugin_command = strdup(optarg);
+				state->args.plugin_per_output = true;
 			}
 			break;
 		default:
@@ -1691,7 +1712,7 @@ static void render_fallback_surface(struct swaylock_surface *surface) {
 }
 
 static void setup_clientless_mode(struct swaylock_state *state) {
-	// First, shutdown nested server and all resources.
+	// First, shutdown nested server, and all resources and clients.
 	// todo: any additional clean up necessary?
 	loop_remove_fd(state->eventloop, wl_event_loop_get_fd(state->server.loop));
 	wl_display_destroy(state->server.display);
@@ -1859,22 +1880,32 @@ static void client_destroyed(struct wl_listener *listener, void *data) {
 
 	bool made_a_registry = bg_client->made_a_registry;
 	struct swaylock_state *state = bg_client->state;
-	free(bg_client);
+	struct swaylock_surface *output_surface = bg_client->unique_output;
 
-	struct swaylock_surface *surface;
-	wl_list_for_each(surface, &state->surfaces, link) {
-		surface->client = NULL;
+	if (output_surface) {
+		output_surface->client = NULL;
+	} else {
+		struct swaylock_surface *surface;
+		wl_list_for_each(surface, &state->surfaces, link) {
+			surface->client = NULL;
+		}
 	}
+
+	free(bg_client);
 
 	// Restart the command, ONLY if it successfully did something the last time
 	// A one-shot program like wayland-info will still cycle indefinitely, so
 	// a better measure appears necessary
-	if (!made_a_registry || !run_plugin_command(state)) {
+	if (!made_a_registry || !run_plugin_command(state, output_surface)) {
 		setup_clientless_mode(state);
 	}
 }
 
-static bool run_plugin_command(struct swaylock_state *state) {
+/**
+ * Start the plugin command. If `output` is NULL, apply it to all outputs;
+ * otherwise only to the one specified by `output`.
+ */
+static bool run_plugin_command(struct swaylock_state *state, struct swaylock_surface *output_surface) {
 	int sockpair[2];
 	if (socketpair(AF_UNIX, SOCK_STREAM, 0, sockpair) == -1) {
 		swaylock_log(LOG_ERROR, "Failed to create socket pair for background plugin");
@@ -1924,13 +1955,39 @@ static bool run_plugin_command(struct swaylock_state *state) {
 	wl_client_add_destroy_listener(bg_client->client,
 		&bg_client->client_destroy_listener);
 
-	struct swaylock_surface *surface;
-	wl_list_for_each(surface, &state->surfaces, link) {
-		surface->client = bg_client;
+	if (output_surface) {
+		output_surface->client = bg_client;
+		bg_client->unique_output = output_surface;
+	} else {
+		struct swaylock_surface *surface;
+		wl_list_for_each(surface, &state->surfaces, link) {
+			surface->client = bg_client;
+		}
 	}
+
 
 	return true;
 }
+
+bool global_filter(const struct wl_client *client, const struct wl_global *global,
+	void *data) {
+	struct swaylock_state *state = data;
+	struct swaylock_bg_client *bg_client;
+	wl_list_for_each(bg_client, &state->server.clients, link) {
+		if (bg_client->client == client) {
+			if (bg_client->unique_output && wl_global_get_interface(global) == &wl_output_interface) {
+				struct swaylock_surface *surf = wl_global_get_user_data(global);
+				if (surf != bg_client->unique_output) {
+					return false;
+				}
+			}
+			return true;
+		}
+	}
+	printf("Unidentified client\n");
+	return false;
+}
+
 
 
 static void term_in(int fd, short mask, void *data) {
@@ -2049,6 +2106,37 @@ int main(int argc, char **argv) {
 		return EXIT_FAILURE;
 	}
 
+	// temp: make all backgrounds use some sort of plugin command
+	if (!state.args.plugin_command) {
+		char command[2048];
+		size_t start = 0;
+		start += sprintf(command + start, "swaybg -c '#%06x'", state.args.colors.background >> 8);
+
+		struct swaylock_image *image;
+		wl_list_for_each(image, &state.images, link) {
+			const char *mode = "stretch";
+			if (state.args.mode == BACKGROUND_MODE_STRETCH) {
+				mode = "stretch";
+			} else if (state.args.mode == BACKGROUND_MODE_FILL) {
+				mode = "fill";
+			} else if (state.args.mode == BACKGROUND_MODE_FIT) {
+				mode = "fit";
+			} else if (state.args.mode == BACKGROUND_MODE_CENTER) {
+				mode = "center";
+			} else if (state.args.mode == BACKGROUND_MODE_TILE) {
+				mode = "tile";
+			} else {
+				mode = "solid_color";
+			}
+
+			start += sprintf(command + start, " -o '%s' -i '%s' -m %s",
+					 image->output_name ? image->output_name : "*", image->path, mode);
+		}
+
+		// todo: build more complicated swaybg command
+		state.args.plugin_command = strdup(command);
+	}
+
 	state.eventloop = loop_create();
 
 	wl_list_init(&state.surfaces);
@@ -2070,6 +2158,12 @@ int main(int argc, char **argv) {
 	wl_list_init(&state.stale_wl_output_resources);
 	wl_list_init(&state.stale_xdg_output_resources);
 	wl_list_init(&state.server.clients);
+
+	// Create the downstream display early, so that per-output plugin commands
+	// launched on upstream output receipt have something to connect to.
+	// Issue: the globals may be delayed, somewhat
+	state.server.display = wl_display_create();
+	wl_display_set_global_filter(state.server.display, global_filter, &state);
 
 	if (wl_display_roundtrip(state.display) == -1) {
 		swaylock_log(LOG_ERROR, "wl_display_roundtrip() failed");
@@ -2137,8 +2231,6 @@ int main(int argc, char **argv) {
 		daemonize();
 	}
 
-	state.server.display = wl_display_create();
-
 	/* fill in dmabuf modifier list if empty and upstream provided dmabuf-feedback */
 	if (state.forward.linux_dmabuf && zwp_linux_dmabuf_v1_get_version(state.forward.linux_dmabuf) >= 4) {
 		size_t npairs = 0;
@@ -2198,40 +2290,11 @@ int main(int argc, char **argv) {
 
 	state.server.loop = wl_display_get_event_loop(state.server.display);
 
-	// temp: make all backgrounds use some sort of plugin command
-	if (!state.args.plugin_command) {
-		char command[2048];
-		size_t start = 0;
-		start += sprintf(command + start, "swaybg -c '#%06x'", state.args.colors.background >> 8);
-
-		struct swaylock_image *image;
-		wl_list_for_each(image, &state.images, link) {
-			const char *mode = "stretch";
-			if (state.args.mode == BACKGROUND_MODE_STRETCH) {
-				mode = "stretch";
-			} else if (state.args.mode == BACKGROUND_MODE_FILL) {
-				mode = "fill";
-			} else if (state.args.mode == BACKGROUND_MODE_FIT) {
-				mode = "fit";
-			} else if (state.args.mode == BACKGROUND_MODE_CENTER) {
-				mode = "center";
-			} else if (state.args.mode == BACKGROUND_MODE_TILE) {
-				mode = "tile";
-			} else {
-				mode = "solid_color";
-			}
-
-			start += sprintf(command + start, " -o '%s' -i '%s' -m %s",
-				image->output_name ? image->output_name : "*", image->path, mode);
+	// Start the plugin (assuming it applies to all outputs)
+	if (!state.args.plugin_per_output) {
+		if (!run_plugin_command(&state, NULL)) {
+			setup_clientless_mode(&state);
 		}
-
-		// todo: build more complicated swaybg command
-		state.args.plugin_command = strdup(command);
-	}
-
-	// single fork-exec; we don't want the plugin to outlive us
-	if (!run_plugin_command(&state)) {
-		return EXIT_FAILURE;
 	}
 
 	loop_add_fd(state.eventloop, wl_display_get_fd(state.display), POLLIN,

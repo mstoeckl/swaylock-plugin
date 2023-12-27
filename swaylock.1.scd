@@ -19,6 +19,11 @@ Locks your Wayland session.
 	environment variable, and will be restarted if it closes that
 	connection.
 
+*--command-each* <cmd>
+	Like *--command*, except that the program is executed once for each output.
+	Each instance of the program will only see a single output for which it
+	should provide a surface.
+
 *-C, --config* <path>
 	The config file to use. By default, the following paths are checked:
 	_$HOME/.swaylock/config_, _$XDG\_CONFIG\_HOME/swaylock/config_, and

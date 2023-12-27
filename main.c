@@ -2286,8 +2286,6 @@ int main(int argc, char **argv) {
 	state.server.xdg_output_manager = wl_global_create(state.server.display,
 		&zxdg_output_manager_v1_interface, 2, NULL, bind_xdg_output_manager);
 
-	// TODO: figure out how to implement wl_output reporting and all that
-
 	state.server.loop = wl_display_get_event_loop(state.server.display);
 
 	// Start the plugin (assuming it applies to all outputs)
@@ -2312,6 +2310,14 @@ int main(int argc, char **argv) {
 	sigemptyset(&sa.sa_mask);
 	sa.sa_flags = SA_RESTART;
 	sigaction(SIGUSR1, &sa, NULL);
+
+	// Ignore SIGCHLD, to make child processes be automatically reaped.
+	// (This setting is not inherited to child processes.)
+	struct sigaction sa2;
+	sa2.sa_handler = SIG_IGN;
+	sigemptyset(&sa2.sa_mask);
+	sa2.sa_flags = 0;
+	sigaction(SIGCHLD, &sa2, NULL);
 
 	state.run_display = true;
 	while (state.run_display) {

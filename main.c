@@ -213,6 +213,11 @@ static void create_surface(struct swaylock_surface *surface) {
 		wl_region_destroy(region);
 	}
 
+	// Plugin should provide a surface quickly enough, after compositor
+	// has made the necessary details available
+	surface->client_submission_timer = loop_add_timer(state->eventloop,
+		TIMEOUT_SURFACE, output_redraw_timeout, surface);
+
 	surface->created = true;
 }
 
@@ -245,7 +250,9 @@ static void forward_configure(struct swaylock_surface *surface, bool first_confi
 			/* reconfigure plugin surface with new size */
 			if (surface->plugin_surface->has_been_configured) {
 				/* wait until the first commit/configure cycle is over */
-				uint32_t plugin_serial = surface->client->serial++;
+				struct swaylock_bg_client *bg_client = surface->client ?
+					surface->client : surface->state->server.main_client;
+				uint32_t plugin_serial = bg_client->serial++;
 				add_serial_pair(surface->plugin_surface, serial, plugin_serial, false);
 				zwlr_layer_surface_v1_send_configure(surface->plugin_surface->layer_surface,
 						plugin_serial,
@@ -325,6 +332,9 @@ static const struct wl_callback_listener surface_frame_listener = {
 };
 
 void damage_surface(struct swaylock_surface *surface) {
+	if (!surface->created) {
+		return;
+	}
 	if (surface->width == 0 || surface->height == 0) {
 		// Not yet configured
 		return;
@@ -369,6 +379,11 @@ static void handle_wl_output_mode(void *data, struct wl_output *output,
 static void handle_wl_output_done(void *data, struct wl_output *output) {
 	struct swaylock_surface *surface = data;
 	if (!surface->created && surface->state->run_display) {
+		if (!surface->output_name || !surface->output_description) {
+			swaylock_log(LOG_ERROR, "wl_output::done received, but no name/desription pair yet. Delaying surface creation until these arrived.");
+			return;
+		}
+
 		create_surface(surface);
 	}
 }
@@ -377,6 +392,7 @@ static void handle_wl_output_scale(void *data, struct wl_output *output,
 		int32_t factor) {
 	struct swaylock_surface *surface = data;
 	surface->scale = factor;
+
 	if (surface->state->run_display) {
 		damage_surface(surface);
 	}
@@ -611,27 +627,16 @@ static void handle_global(void *data, struct wl_registry *registry,
 		surface->output_global_name = name;
 		wl_output_add_listener(surface->output, &_wl_output_listener, surface);
 		wl_list_insert(&state->surfaces, &surface->link);
+
 		wl_list_init(&surface->nested_server_wl_output_resources);
 		wl_list_init(&surface->nested_server_xdg_output_resources);
 
-		static int output_no = 0;
-		output_no++;
-		char tmp[32];
-		sprintf(tmp, "swaylock-%d", output_no);
-		surface->output_name = strdup(tmp);
-		surface->output_description = strdup("Generic output");
-
-		// Plugin should provide a surface quickly enough
-		surface->client_submission_timer = loop_add_timer(state->eventloop,
-			TIMEOUT_SURFACE, output_redraw_timeout, surface);
-
+		// Run command as soon as we know the output exists
 		if (state->args.plugin_per_output) {
 			if (!run_plugin_command(state, surface)) {
 				setup_clientless_mode(state);
 			}
 		}
-
-
 	} else if (strcmp(interface, ext_session_lock_manager_v1_interface.name) == 0) {
 		state->ext_session_lock_manager_v1 = wl_registry_bind(registry, name,
 				&ext_session_lock_manager_v1_interface, 1);
@@ -1627,13 +1632,13 @@ void wlr_layer_shell_get_layer_surface(struct wl_client *client,
 		struct wl_resource *resource, uint32_t id, struct wl_resource *surface,
 		struct wl_resource *output, uint32_t layer, const char *namespace) {
 	if (!output) {
-		swaylock_log(LOG_ERROR, "TODO: handle case where output is null -- pick next available output?\n");
+		swaylock_log(LOG_ERROR, "TODO: handle case where output is null -- pick next available output?");
+		return;
 	}
 
 	assert(wl_resource_instance_of(output, &wl_output_interface, &wl_output_impl));
 	struct swaylock_surface *sw_surface = wl_resource_get_user_data(output);
 	struct forward_surface *surf= wl_resource_get_user_data(surface);
-
 	// todo: replace the old surface instead; this will simplify implementation
 	// of plugin command restarting
 	if (sw_surface->plugin_surface) {
@@ -1655,7 +1660,9 @@ void wlr_layer_shell_get_layer_surface(struct wl_client *client,
 
 	/* consume a serial, and do not reveal it to the client, for the purpose
 	 * of ensuring this value is unique. todo: simpler solution */
-	surf->last_used_plugin_serial = sw_surface->client->serial++;
+	struct swaylock_bg_client *bg_client = sw_surface->client ?
+		sw_surface->client : sw_surface->state->server.main_client;
+	surf->last_used_plugin_serial = bg_client->serial++;
 
 	/* now, create the object that was asked for */
 	struct wl_resource *layer_surface_resource = wl_resource_create(client,
@@ -1763,7 +1770,7 @@ static void output_redraw_timeout(void *data) {
 	// The event loop frees the timer object, so clean up
 	surface->client_submission_timer = NULL;
 
-	if (!surface->client) {
+	if (!surface->client && !surface->state->server.main_client) {
 		swaylock_log(LOG_DEBUG,
 			"Original client failed to redraw output %d in time",
 			surface->output_global_name);
@@ -1774,7 +1781,7 @@ static void output_redraw_timeout(void *data) {
 			surface->output_global_name);
 	}
 
-	client_timeout(surface->client);
+	client_timeout(surface->client ? surface->client : surface->state->server.main_client);
 }
 
 
@@ -1885,10 +1892,7 @@ static void client_destroyed(struct wl_listener *listener, void *data) {
 	if (output_surface) {
 		output_surface->client = NULL;
 	} else {
-		struct swaylock_surface *surface;
-		wl_list_for_each(surface, &state->surfaces, link) {
-			surface->client = NULL;
-		}
+		state->server.main_client = NULL;
 	}
 
 	free(bg_client);
@@ -1959,12 +1963,8 @@ static bool run_plugin_command(struct swaylock_state *state, struct swaylock_sur
 		output_surface->client = bg_client;
 		bg_client->unique_output = output_surface;
 	} else {
-		struct swaylock_surface *surface;
-		wl_list_for_each(surface, &state->surfaces, link) {
-			surface->client = bg_client;
-		}
+		state->server.main_client = bg_client;
 	}
-
 
 	return true;
 }

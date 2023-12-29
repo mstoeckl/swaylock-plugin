@@ -116,6 +116,8 @@ struct swaylock_bg_server {
 	struct wl_global *drm;
 
 	struct wl_list clients;
+	/* If not NULL, this client provides buffers for all surfaces */
+	struct swaylock_bg_client *main_client;
 };
 
 struct dmabuf_modifier_pair {
@@ -314,7 +316,8 @@ struct swaylock_surface {
 	/* has a buffer been attached and committed */
 	bool has_buffer;
 
-	/* The client which provides surfaces for this surface */
+	/* If not NULL, the client which provides surfaces for this surface.
+	 * If NULL, server.main_client will do so */
 	struct swaylock_bg_client *client;
 
 	/* Timer to verify if the client submits surfaces promptly.

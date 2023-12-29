@@ -147,7 +147,8 @@ static void nested_surface_commit(struct wl_client *client,
 
 	if (!surface->has_been_configured) {
 		/* send initial configure */
-		struct swaylock_bg_client *bg_client = surface->sway_surface->client;
+		struct swaylock_bg_client *bg_client = surface->sway_surface->client ?
+			surface->sway_surface->client : surface->sway_surface->state->server.main_client;
 		uint32_t plugin_serial = bg_client->serial++;
 
 		if (surface->sway_surface->width == 0 || surface->sway_surface->height == 0) {

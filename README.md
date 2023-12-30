@@ -13,7 +13,7 @@ is replaced by your desired program. Examples:
 * [`rwalkbg`](https://git.sr.ht/~mstoeckl/rwalkbg), a very slow animation
 * [`wscreensaver`](https://git.sr.ht/~mstoeckl/wscreensaver), an experiment in porting a few xscreensaver hacks to Wayland
 * You can rotate between wallpapers in a folder by setting the following script
-  as the command; e.g.: `swaylock-plugin --command './rotate_example.sh /path/to/folder'`. (This works by periodically killing the wallpaper program, after which `swaylock-plugin` automatically restarts it.)
+  as the command; e.g.: `swaylock-plugin --command './example_rotate.sh /path/to/folder'`. (This works by periodically killing the wallpaper program, after which `swaylock-plugin` automatically restarts it.)
     ```
     #!/bin/sh
     file=`ls $1 | shuf -n 1`

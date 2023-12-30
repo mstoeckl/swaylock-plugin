@@ -1635,14 +1635,31 @@ static const struct zwlr_layer_surface_v1_interface layer_surface_impl = {
 void wlr_layer_shell_get_layer_surface(struct wl_client *client,
 		struct wl_resource *resource, uint32_t id, struct wl_resource *surface,
 		struct wl_resource *output, uint32_t layer, const char *namespace) {
-	if (!output) {
-		swaylock_log(LOG_ERROR, "TODO: handle case where output is null -- pick next available output?");
-		return;
+	struct forward_surface *surf = wl_resource_get_user_data(surface);
+	struct swaylock_state *state = wl_resource_get_user_data(resource);
+
+	struct swaylock_surface *sw_surface;
+	if ((state->server.main_client && client == state->server.main_client->client) || output) {
+		if (!output) {
+			swaylock_log(LOG_ERROR, "Main client tried to create a layer surface without specifying an output");
+			return;
+		}
+		assert(wl_resource_instance_of(output, &wl_output_interface, &wl_output_impl));
+		sw_surface = wl_resource_get_user_data(output);
+	} else {
+		// Lookup output for client
+		struct swaylock_bg_client *bg_client;
+		wl_list_for_each(bg_client, &state->server.clients, link) {
+			if (bg_client->client == client) {
+				sw_surface = bg_client->unique_output;
+			}
+		}
+		if (!sw_surface) {
+			swaylock_log(LOG_ERROR, "Failed to find an output matching client");
+			return;
+		}
 	}
 
-	assert(wl_resource_instance_of(output, &wl_output_interface, &wl_output_impl));
-	struct swaylock_surface *sw_surface = wl_resource_get_user_data(output);
-	struct forward_surface *surf= wl_resource_get_user_data(surface);
 	// todo: replace the old surface instead; this will simplify implementation
 	// of plugin command restarting
 	if (sw_surface->plugin_surface) {
@@ -1689,11 +1706,12 @@ static const struct zwlr_layer_shell_v1_interface zwlr_layer_shell_v1_impl = {
 static void bind_wlr_layer_shell(struct wl_client *client, void *data, uint32_t version, uint32_t id) {
 	struct wl_resource *resource =
 		wl_resource_create(client, &zwlr_layer_shell_v1_interface, version, id);
+	struct swaylock_state *state = data;
 	if (resource == NULL) {
 		wl_client_post_no_memory(client);
 		return;
 	}
-	wl_resource_set_implementation(resource, &zwlr_layer_shell_v1_impl, NULL, NULL);
+	wl_resource_set_implementation(resource, &zwlr_layer_shell_v1_impl, state, NULL);
 }
 
 static void render_fallback_surface(struct swaylock_surface *surface) {
@@ -2309,7 +2327,7 @@ int main(int argc, char **argv) {
 	// Fortunately, the _interface_ structs are identical between
 	// wayland-client and wayland-server
 	state.server.wlr_layer_shell = wl_global_create(state.server.display,
-		&zwlr_layer_shell_v1_interface, 1, NULL, bind_wlr_layer_shell);
+		&zwlr_layer_shell_v1_interface, 1, &state, bind_wlr_layer_shell);
 	state.server.xdg_output_manager = wl_global_create(state.server.display,
 		&zxdg_output_manager_v1_interface, 2, NULL, bind_xdg_output_manager);
 

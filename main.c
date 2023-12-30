@@ -218,6 +218,15 @@ static void create_surface(struct swaylock_surface *surface) {
 	surface->client_submission_timer = loop_add_timer(state->eventloop,
 		TIMEOUT_SURFACE, output_redraw_timeout, surface);
 
+	// Run command, now that we know the output's name and description,
+	// and can pass these along to the plugin program using environment
+	// variables, so it can e.g. decide which wallpaper program to run.
+	if (state->args.plugin_per_output) {
+		if (!run_plugin_command(state, surface)) {
+			setup_clientless_mode(state);
+		}
+	}
+
 	surface->created = true;
 }
 
@@ -630,13 +639,6 @@ static void handle_global(void *data, struct wl_registry *registry,
 
 		wl_list_init(&surface->nested_server_wl_output_resources);
 		wl_list_init(&surface->nested_server_xdg_output_resources);
-
-		// Run command as soon as we know the output exists
-		if (state->args.plugin_per_output) {
-			if (!run_plugin_command(state, surface)) {
-				setup_clientless_mode(state);
-			}
-		}
 	} else if (strcmp(interface, ext_session_lock_manager_v1_interface.name) == 0) {
 		state->ext_session_lock_manager_v1 = wl_registry_bind(registry, name,
 				&ext_session_lock_manager_v1_interface, 1);
@@ -1785,7 +1787,8 @@ static void output_redraw_timeout(void *data) {
 }
 
 
-static bool spawn_command(struct swaylock_state *state, int sock_child, int sock_local) {
+static bool spawn_command(struct swaylock_state *state, int sock_child,
+		int sock_local, const char *output_name, const char *output_desc) {
 	posix_spawn_file_actions_t actions;
 	if (posix_spawn_file_actions_init(&actions) == -1) {
 		swaylock_log(LOG_ERROR, "Failed to initialize file actions");
@@ -1801,7 +1804,7 @@ static bool spawn_command(struct swaylock_state *state, int sock_child, int sock
 	while (environ[envlen]) {
 		envlen++;
 	}
-	char **prog_envp = calloc(envlen + 2, sizeof(char *));
+	char **prog_envp = calloc(envlen + 4, sizeof(char *));
 	if (!prog_envp) {
 		posix_spawn_file_actions_destroy(&actions);
 		swaylock_log(LOG_ERROR, "Failed to allocate new environ");
@@ -1811,24 +1814,36 @@ static bool spawn_command(struct swaylock_state *state, int sock_child, int sock
 	for (size_t i = 0; i < envlen; i++) {
 		// removing WAYLAND_DEBUG avoids confusion between debug logs;
 		// alas, the default debug log does not distinguish programs :-(
-		const char skip1[] = "WAYLAND_DEBUG";
-		const char skip2[] = "WAYLAND_DISPLAY";
-		const char skip3[] = "WAYLAND_SOCKET";
-		if (strncmp(environ[i], skip1, sizeof(skip1) - 1) == 0) {
-			continue;
+		const char *skip[] = {
+			"WAYLAND_DEBUG",
+			"WAYLAND_DISPLAY",
+			"WAYLAND_SOCKET",
+			"SWAYLOCK_PLUGIN_OUTPUT_NAME",
+			"SWAYLOCK_PLUGIN_OUTPUT_DESC",
+		};
+		bool drop = false;
+		for (size_t k = 0; k < sizeof(skip) / sizeof(skip[0]); k++) {
+			if (strncmp(environ[i], skip[k], strlen(skip[k])) == 0) {
+				drop = true;
+				break;
+			}
 		}
-		if (strncmp(environ[i], skip2, sizeof(skip2) - 1) == 0) {
-			continue;
-		}
-		if (strncmp(environ[i], skip3, sizeof(skip3) - 1) == 0) {
+		if (drop) {
 			continue;
 		}
 
 		prog_envp[j++] = environ[i];
 	}
-	char sock_env[32];
-	snprintf(sock_env, sizeof(sock_env), "WAYLAND_SOCKET=%d", sock_child);
-	prog_envp[j++] = sock_env;
+	char kv_name[256], kv_desc[256];
+	char kv_socket[32];
+	snprintf(kv_socket, sizeof(kv_socket), "WAYLAND_SOCKET=%d", sock_child);
+	prog_envp[j++] = kv_socket;
+	if (output_name && output_desc) {
+		snprintf(kv_name, sizeof(kv_name), "SWAYLOCK_PLUGIN_OUTPUT_NAME=%s", output_name);
+		snprintf(kv_desc, sizeof(kv_desc), "SWAYLOCK_PLUGIN_OUTPUT_DESC=%s", output_desc);
+		prog_envp[j++] = kv_name;
+		prog_envp[j++] = kv_desc;
+	}
 	prog_envp[j++] = NULL;
 
 	char *prog_argv[] = {
@@ -1922,7 +1937,9 @@ static bool run_plugin_command(struct swaylock_state *state, struct swaylock_sur
 		return false;
 	}
 
-	if (!spawn_command(state, sockpair[0], sockpair[1])) {
+	if (!spawn_command(state, sockpair[0], sockpair[1],
+			output_surface ? output_surface->output_name : NULL,
+			output_surface ? output_surface->output_description : NULL)) {
 		close(sockpair[0]);
 		close(sockpair[1]);
 		printf("Failed to run command: %s\n", state->args.plugin_command);

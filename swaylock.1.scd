@@ -15,14 +15,17 @@ Locks your Wayland session.
 *--command* <cmd>
 	Specify the program used to draw the background. It must promptly
 	provide a full-size background layer surface for each Wayland output.
-	It will be provided a Wayland connection using the WAYLAND_SOCKET
+	It will be provided a Wayland connection using the _WAYLAND_SOCKET_
 	environment variable, and will be restarted if it closes that
 	connection.
 
 *--command-each* <cmd>
 	Like *--command*, except that the program is executed once for each output.
 	Each instance of the program will only see a single output for which it
-	should provide a surface.
+	should provide a surface. Each will also receive, through the environment
+	variables _SWAYLOCK_PLUGIN_OUTPUT_NAME_ and _SWAYLOCK_PLUGIN_OUTPUT_DESC_,
+	the values of the compositor's _wl_output::name_ and _wl_output::description_
+	for the instance's output.
 
 *-C, --config* <path>
 	The config file to use. By default, the following paths are checked:

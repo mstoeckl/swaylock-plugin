@@ -1721,6 +1721,11 @@ static void render_fallback_surface(struct swaylock_surface *surface) {
 }
 
 static void setup_clientless_mode(struct swaylock_state *state) {
+	if (!state->server.display) {
+		// Have already done this
+		return;
+	}
+
 	// First, shutdown nested server, and all resources and clients.
 	// todo: any additional clean up necessary?
 	loop_remove_fd(state->eventloop, wl_event_loop_get_fd(state->server.loop));

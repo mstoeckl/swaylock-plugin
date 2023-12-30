@@ -279,6 +279,7 @@ static void ext_session_lock_surface_v1_handle_configure(void *data,
 	bool size_change = surface->width != width || surface->height != height;
 	surface->width = width;
 	surface->height = height;
+	surface->newest_serial = serial;
 	/* Quoting the spec:
 	 *	Sending an ack_configure request consumes the configure event
 	 *	referenced by the given serial, as well as all older configure
@@ -291,6 +292,7 @@ static void ext_session_lock_surface_v1_handle_configure(void *data,
 	 */
 	if (surface->state->server.display) {
 		forward_configure(surface, first_configure, serial);
+		surface->has_newer_serial = true;
 	} else {
 		ext_session_lock_surface_v1_ack_configure(surface->ext_session_lock_surface_v1, serial);
 		render_fallback_surface(surface);
@@ -1744,6 +1746,9 @@ static void setup_clientless_mode(struct swaylock_state *state) {
 			// but the nested client has not yet assigned a buffer,
 			// so that configure has not been replied to. (This may be wrong)
 			ext_session_lock_surface_v1_ack_configure(surface->ext_session_lock_surface_v1, surface->first_configure_serial);
+			if (surface->first_configure_serial == surface->newest_serial) {
+				surface->has_newer_serial = false;
+			}
 			render_fallback_surface(surface);
 		}
 		render_frame(surface);

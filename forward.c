@@ -159,11 +159,21 @@ static void nested_surface_commit(struct wl_client *client,
 		// if the upstream surface is also new, then forward the configure;
 		// but if the upsteam surface was configured long ago, then
 		// keep the configure local
-		if (surface->sway_surface->used_first_configure) {
-			add_serial_pair(surface, 0, plugin_serial, true);
-		} else {
+		if (!surface->sway_surface->used_first_configure) {
 			add_serial_pair(surface, surface->sway_surface->first_configure_serial, plugin_serial, false);
 			surface->sway_surface->used_first_configure = true;
+		} else if (surface->sway_surface->has_newer_serial) {
+			/* In this case, the swaylock surface has received
+			 * unacknowledged configures that the previous client
+			 * for the surface did not acknowledge. Since we are
+			 * giving this client an up to date size, acknowledge
+			 * the corresponding configure when the client finally
+			 * responds. */
+			add_serial_pair(surface, surface->sway_surface->newest_serial, plugin_serial, false);
+		} else {
+			/* Swallow plugin's configure event -- all upstream configures
+			 * were acknowledged by past clients */
+			add_serial_pair(surface, 0, plugin_serial, true);
 		}
 		zwlr_layer_surface_v1_send_configure(surface->layer_surface, plugin_serial,
 			surface->sway_surface->width, surface->sway_surface->height);
@@ -274,6 +284,9 @@ static void nested_surface_commit(struct wl_client *client,
 		 * the gap between ack and commit from the plugin */
 		ext_session_lock_surface_v1_ack_configure(sw_surf->ext_session_lock_surface_v1, sw_surf->pending_upstream_serial);
 		sw_surf->has_pending_ack_conf = false;
+		if (sw_surf->pending_upstream_serial == sw_surf->newest_serial) {
+			sw_surf->has_newer_serial = false;
+		}
 	}
 
 	if (sw_surf->client_submission_timer) {

@@ -313,6 +313,11 @@ struct swaylock_surface {
 	bool has_pending_ack_conf;
 	uint32_t pending_upstream_serial;
 
+	/* Does this surface have a newer configure that it did not yet acknowledge?
+	 * Tracking this is useful when the client is replaced. */
+	bool has_newer_serial;
+	uint32_t newest_serial;
+
 	/* has a buffer been attached and committed */
 	bool has_buffer;
 

@@ -154,10 +154,12 @@ executable('swaylock-plugin',
 	install: true
 )
 
-install_data(
-	'pam/swaylock-plugin',
-	install_dir: get_option('sysconfdir') / 'pam.d'
-)
+if libpam.found()
+	install_data(
+		'pam/swaylock-plugin',
+		install_dir: get_option('sysconfdir') / 'pam.d'
+	)
+endif
 
 if scdoc.found()
 	mandir = get_option('mandir')

@@ -11,7 +11,11 @@ is replaced by your desired program. Examples:
 * [`mpvpaper`](https://github.com/GhostNaN/mpvpaper), which lets you play videos
 * [`shaderbg`](https://git.sr.ht/~mstoeckl/shaderbg), renders OpenGL shaders
 * [`rwalkbg`](https://git.sr.ht/~mstoeckl/rwalkbg), a very slow animation
-* [`wscreensaver`](https://git.sr.ht/~mstoeckl/wscreensaver), an experiment in porting a few xscreensaver hacks to Wayland
+* [`wscreensaver`](https://git.sr.ht/~mstoeckl/wscreensaver), an experiment in porting
+   a few xscreensaver hacks to Wayland
+* [`windowtolayer`](https://gitlab.freedesktop.org/mstoeckl/windowtolayer), a tool that
+   can be used to run normally windowed applications, like terminals, as wallpapers.
+   Requires `--command-each` flag.
 * You can rotate between wallpapers in a folder by setting the following script
   as the command; e.g.: `swaylock-plugin --command './example_rotate.sh /path/to/folder'`. (This works by periodically killing the wallpaper program, after which `swaylock-plugin` automatically restarts it.)
     ```

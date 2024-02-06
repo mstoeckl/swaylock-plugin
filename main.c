@@ -1854,6 +1854,7 @@ static bool spawn_command(struct swaylock_state *state, int sock_child,
 			"WAYLAND_SOCKET",
 			"SWAYLOCK_PLUGIN_OUTPUT_NAME",
 			"SWAYLOCK_PLUGIN_OUTPUT_DESC",
+			"DISPLAY",
 		};
 		bool drop = false;
 		for (size_t k = 0; k < sizeof(skip) / sizeof(skip[0]); k++) {

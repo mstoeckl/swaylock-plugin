@@ -58,15 +58,14 @@ static void nested_surface_damage(struct wl_client *client,
 	assert(wl_resource_instance_of(resource, &wl_surface_interface, &surface_impl));
 	struct forward_surface *surface = wl_resource_get_user_data(resource);
 
-
-	struct damage_record *new_damage = realloc(surface->buffer_damage, sizeof(struct damage_record) * (surface->buffer_damage_len + 1));
+	struct damage_record *new_damage = realloc(surface->old_damage, sizeof(struct damage_record) * (surface->old_damage_len + 1));
 	if (new_damage) {
-		surface->buffer_damage = new_damage;
-		surface->buffer_damage[surface->buffer_damage_len].x = x;
-		surface->buffer_damage[surface->buffer_damage_len].y = y;
-		surface->buffer_damage[surface->buffer_damage_len].w = width;
-		surface->buffer_damage[surface->buffer_damage_len].h = height;
-		surface->buffer_damage_len++;
+		surface->old_damage = new_damage;
+		surface->old_damage[surface->old_damage_len].x = x;
+		surface->old_damage[surface->old_damage_len].y = y;
+		surface->old_damage[surface->old_damage_len].w = width;
+		surface->old_damage[surface->old_damage_len].h = height;
+		surface->old_damage_len++;
 	}
 }
 
@@ -243,15 +242,15 @@ static void nested_surface_commit(struct wl_client *client,
 	/* apply and clear damage */
 	for (size_t i = 0; i < surface->buffer_damage_len; i++) {
 		wl_surface_damage_buffer(background, surface->buffer_damage[i].x,
-					 surface->buffer_damage[i].y,
-					 surface->buffer_damage[i].w,
-					 surface->buffer_damage[i].h);
+			surface->buffer_damage[i].y,
+			surface->buffer_damage[i].w,
+			surface->buffer_damage[i].h);
 	}
 	for (size_t i = 0; i < surface->old_damage_len; i++) {
 		wl_surface_damage(background, surface->old_damage[i].x,
-					 surface->old_damage[i].y,
-					 surface->old_damage[i].w,
-					 surface->old_damage[i].h);
+			surface->old_damage[i].y,
+			surface->old_damage[i].w,
+			surface->old_damage[i].h);
 	}
 
 	free(surface->buffer_damage);

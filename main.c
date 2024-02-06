@@ -243,11 +243,11 @@ static void forward_configure(struct swaylock_surface *surface, bool first_confi
 	} else if (surface->width > 0 && surface->height > 0) {
 		struct wl_resource *output;
 		wl_resource_for_each(output, &surface->nested_server_wl_output_resources) {
-			wl_output_send_geometry(output, 0, 0, 1 + WL_OUTPUT_MM_PER_PIX*surface->width,
-						1 + WL_OUTPUT_MM_PER_PIX*surface->height,
-						0, "swaylock","swaylock", WL_OUTPUT_TRANSFORM_NORMAL);
-			// todo: how should scale/etc affect this
-			wl_output_send_mode(output, 0, surface->width, surface->height, 0);
+			wl_output_send_geometry(output, 0, 0, surface->physical_width,
+				surface->physical_height, surface->subpixel,
+				"swaylock", "swaylock", surface->output_transform);
+			wl_output_send_mode(output, 1, surface->mode_width, surface->mode_height, 0);
+			wl_output_send_scale(output, surface->scale);
 			wl_output_send_done(output);
 		}
 		struct wl_resource *xdg_output;
@@ -377,6 +377,9 @@ static void handle_wl_output_geometry(void *data, struct wl_output *wl_output,
 		int32_t transform) {
 	struct swaylock_surface *surface = data;
 	surface->subpixel = subpixel;
+	surface->physical_width = width_mm;
+	surface->physical_height = height_mm;
+	surface->output_transform = transform;
 	if (surface->state->run_display) {
 		damage_surface(surface);
 	}
@@ -384,7 +387,11 @@ static void handle_wl_output_geometry(void *data, struct wl_output *wl_output,
 
 static void handle_wl_output_mode(void *data, struct wl_output *output,
 		uint32_t flags, int32_t width, int32_t height, int32_t refresh) {
-	// Who cares
+	struct swaylock_surface *surface = data;
+	if (flags & WL_OUTPUT_MODE_CURRENT) {
+		surface->mode_width = width;
+		surface->mode_height = height;
+	}
 }
 
 static void handle_wl_output_done(void *data, struct wl_output *output) {
@@ -1519,11 +1526,10 @@ static void bind_wl_output(struct wl_client *client, void *data,
 
 	// critically, each wl_output is only advertised when the swaylock_surface
 	// is first configured, since that is the size that we want to fill
-	wl_output_send_geometry(resource, 0, 0, 1 + WL_OUTPUT_MM_PER_PIX*surface->width,
-				1 + WL_OUTPUT_MM_PER_PIX*surface->height,
-				0, "swaylock","swaylock", WL_OUTPUT_TRANSFORM_NORMAL);
-	// todo: how should scale/etc affect this
-	wl_output_send_mode(resource, 0, surface->width, surface->height, 0);
+	wl_output_send_geometry(resource, 0, 0, surface->physical_width,
+		surface->physical_height, surface->subpixel,
+		"swaylock","swaylock", surface->output_transform);
+	wl_output_send_mode(resource, 1, surface->mode_width, surface->mode_height, 0);
 	wl_output_send_scale(resource, surface->scale);
 
 	if (version >= 4) {

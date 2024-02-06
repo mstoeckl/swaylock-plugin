@@ -210,10 +210,6 @@ static void nested_surface_commit(struct wl_client *client,
 		wl_surface_set_buffer_transform(background, surface->pending.buffer_transform);
 		surface->committed.buffer_transform = surface->pending.buffer_transform;
 	}
-	if (surface->committed.buffer_scale != surface->pending.buffer_scale) {
-		wl_surface_set_buffer_scale(background, surface->pending.buffer_scale);
-		surface->committed.buffer_scale = surface->pending.buffer_scale;
-	}
 	if (surface->committed.attachment != surface->pending.attachment &&
 			!(surface->pending.attachment == BUFFER_COMMITTED)) {
 		// note: would need '||  surface->pending.attachment' for random_walk_bg due to buffer reuse abuse

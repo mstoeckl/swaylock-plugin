@@ -296,6 +296,8 @@ struct swaylock_surface {
 	enum wl_output_subpixel subpixel;
 	char *output_name;
 	char *output_description;
+	int32_t physical_width, physical_height, output_transform;
+	int32_t mode_width, mode_height;
 	struct wl_list link;
 
 	struct wl_global *nested_server_output;

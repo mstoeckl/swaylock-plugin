@@ -209,10 +209,11 @@ static void nested_surface_commit(struct wl_client *client,
 		wl_surface_set_buffer_transform(background, surface->pending.buffer_transform);
 		surface->committed.buffer_transform = surface->pending.buffer_transform;
 	}
-	if (surface->committed.attachment != surface->pending.attachment &&
-			!(surface->pending.attachment == BUFFER_COMMITTED)) {
-		// note: would need '||  surface->pending.attachment' for random_walk_bg due to buffer reuse abuse
-
+	// The protocol does not make this fully explicit, but the buffer should
+	// be attached _each time_ that any damage is sent alongside it, even if
+	// the buffer is the same. This is also necessary to ensure that the
+	// appropriate release events are sent
+	if (surface->pending.attachment != BUFFER_COMMITTED) {
 		/* unlink the committed attachment */
 		if (surface->committed.attachment != NULL && surface->committed.attachment != BUFFER_UNREACHABLE) {
 			assert(surface->committed.attachment->resource != NULL);

@@ -132,6 +132,7 @@ sources = [
 	'pool-buffer.c',
 	'render.c',
 	'seat.c',
+	'setsid.c',
 	'unicode.c',
 ]
 

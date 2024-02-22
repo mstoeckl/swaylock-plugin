@@ -1820,29 +1820,44 @@ static void output_redraw_timeout(void *data) {
 	client_timeout(surface->client ? surface->client : surface->state->server.main_client);
 }
 
-
+uint32_t posix_spawn_setsid_flag(void);
 static bool spawn_command(struct swaylock_state *state, int sock_child,
 		int sock_local, const char *output_name, const char *output_desc) {
 	posix_spawn_file_actions_t actions;
+	posix_spawnattr_t attribs;
+	char **prog_envp = NULL;
+	bool ret = false;
+
 	if (posix_spawn_file_actions_init(&actions) == -1) {
 		swaylock_log(LOG_ERROR, "Failed to initialize file actions");
 		return false;
 	}
-	if (posix_spawn_file_actions_addclose(&actions, sock_local) == -1) {
+	if (posix_spawnattr_init(&attribs) != 0) {
 		posix_spawn_file_actions_destroy(&actions);
-		swaylock_log(LOG_ERROR, "Failed to update file actions");
+		swaylock_log(LOG_ERROR, "Failed to init spawn attributes");
 		return false;
+	}
+
+	if (posix_spawn_file_actions_addclose(&actions, sock_local) == -1) {
+		swaylock_log(LOG_ERROR, "Failed to update file actions");
+		goto end;
+	}
+	/* Make child processes their own session leader. This ensures that
+	 * they do not have a controlling terminal, and thus should not expect
+	 * to interact on swaylock's terminal */
+	if (posix_spawnattr_setflags(&attribs, posix_spawn_setsid_flag()) != 0) {
+		swaylock_log(LOG_ERROR, "Failed to set spawn flags");
+		goto end;
 	}
 
 	size_t envlen = 0;
 	while (environ[envlen]) {
 		envlen++;
 	}
-	char **prog_envp = calloc(envlen + 4, sizeof(char *));
+	prog_envp = calloc(envlen + 4, sizeof(char *));
 	if (!prog_envp) {
-		posix_spawn_file_actions_destroy(&actions);
 		swaylock_log(LOG_ERROR, "Failed to allocate new environ");
-		return false;
+		goto end;
 	}
 	size_t j = 0;
 	for (size_t i = 0; i < envlen; i++) {
@@ -1888,17 +1903,18 @@ static bool spawn_command(struct swaylock_state *state, int sock_child,
 	// Use posix_spawnp to spawn program. This is rather awkward to do,
 	// but can be significantly more efficient than fork()+exec()
 	pid_t pid;
-	if (posix_spawnp(&pid, "sh", &actions, NULL, prog_argv, prog_envp) == -1) {
+	if (posix_spawnp(&pid, "sh", &actions, &attribs, prog_argv, prog_envp) == -1) {
 		swaylock_log(LOG_ERROR, "Failed to forkspawn background plugin: %s", strerror(errno));
-		free(prog_envp);
-		posix_spawn_file_actions_destroy(&actions);
-		return false;
+		goto end;
 	}
+	fprintf(stderr, "Forked background plugin (pid = %d): %s\n", pid, state->args.plugin_command);
+	ret = true;
+
+end:
+	posix_spawnattr_destroy(&attribs);
 	posix_spawn_file_actions_destroy(&actions);
 	free(prog_envp);
-
-	fprintf(stderr, "Forked background plugin (pid = %d): %s\n", pid, state->args.plugin_command);
-	return true;
+	return ret;
 }
 
 static void client_resource_create(struct wl_listener *listener, void *data) {

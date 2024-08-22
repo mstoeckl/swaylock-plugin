@@ -12,7 +12,7 @@ is replaced by your desired program. Examples:
 * [`shaderbg`](https://git.sr.ht/~mstoeckl/shaderbg), renders OpenGL shaders
 * [`rwalkbg`](https://git.sr.ht/~mstoeckl/rwalkbg), a very slow animation
 * [`wscreensaver`](https://git.sr.ht/~mstoeckl/wscreensaver), an experiment in porting
-   a few xscreensaver hacks to Wayland
+   a few xscreensaver hacks to Wayland. Best with the `--command-each` flag.
 * [`windowtolayer`](https://gitlab.freedesktop.org/mstoeckl/windowtolayer), a tool that
    can be used to run normally windowed applications, like terminals, as wallpapers.
    Requires `--command-each` flag.

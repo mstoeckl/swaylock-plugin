@@ -270,6 +270,7 @@ struct swaylock_state {
 	struct zxdg_output_manager_v1 *zxdg_output_manager;
 	struct forward_state forward;
 	struct swaylock_bg_server server;
+	bool start_clientless_mode;
 
 	// for nested server, output was destroyed
 	struct wl_list stale_wl_output_resources;

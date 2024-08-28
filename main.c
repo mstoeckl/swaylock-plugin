@@ -1441,6 +1441,9 @@ static void comm_in(int fd, short mask, void *data) {
 
 static void dispatch_nested(int fd, short mask, void *data) {
 	wl_event_loop_dispatch(state.server.loop, 0);
+	if (state.start_clientless_mode) {
+		setup_clientless_mode(&state);
+	}
 }
 
 static void xdg_output_destroy_func(struct wl_resource *resource) {
@@ -1777,7 +1780,6 @@ static void setup_clientless_mode(struct swaylock_state *state) {
 		}
 		render_frame(surface);
 	}
-
 }
 
 
@@ -1967,7 +1969,9 @@ static void client_destroyed(struct wl_listener *listener, void *data) {
 	// A one-shot program like wayland-info will still cycle indefinitely, so
 	// a better measure appears necessary
 	if (!made_a_registry || !run_plugin_command(state, output_surface)) {
-		setup_clientless_mode(state);
+		// Cannot call `setup_clientless_mode` inside `wl_event_loop_dispatch`,
+		// so mark it to be called immediately afterwards
+		state->start_clientless_mode = true;
 	}
 }
 

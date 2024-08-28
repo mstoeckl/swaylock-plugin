@@ -25,6 +25,22 @@ static const struct zwp_linux_dmabuf_feedback_v1_interface linux_dmabuf_feedback
 static const struct wp_viewport_interface viewport_impl;
 static const struct wp_fractional_scale_v1_interface fractional_scale_impl;
 
+static bool does_transform_transpose_size(int32_t transform) {
+	switch (transform) {
+	default:
+	case WL_OUTPUT_TRANSFORM_NORMAL:
+	case WL_OUTPUT_TRANSFORM_180:
+	case WL_OUTPUT_TRANSFORM_FLIPPED:
+	case WL_OUTPUT_TRANSFORM_FLIPPED_180:
+		return false;
+	case WL_OUTPUT_TRANSFORM_90:
+	case WL_OUTPUT_TRANSFORM_270:
+	case WL_OUTPUT_TRANSFORM_FLIPPED_90:
+	case WL_OUTPUT_TRANSFORM_FLIPPED_270:
+		return false;
+	}
+}
+
 static void nested_surface_destroy(struct wl_client *client,
 		struct wl_resource *resource) {
 	// this will also destroy the user_data.
@@ -104,13 +120,16 @@ static void nested_surface_set_input_region(struct wl_client *client,
 	// do nothing, swaylock doesn't need to know about regions
 }
 
-void add_serial_pair(struct forward_surface *surf, uint32_t upstream_serial, uint32_t downstream_serial, bool local_only) {
+void add_serial_pair(struct forward_surface *surf, uint32_t upstream_serial,
+		uint32_t downstream_serial, uint32_t width, uint32_t height, bool local_only) {
 	surf->serial_table = realloc(surf->serial_table, sizeof(struct serial_pair) * (surf->serial_table_len + 1));
 	assert(surf->serial_table);
 
 	surf->serial_table[surf->serial_table_len] = (struct serial_pair) {
 		.plugin_serial = downstream_serial,
 		.upstream_serial = upstream_serial,
+		.config_width = width,
+		.config_height = height,
 		.local_only = local_only,
 	};
 	surf->serial_table_len++;
@@ -154,7 +173,8 @@ static void nested_surface_commit(struct wl_client *client,
 			surface->sway_surface->client : surface->sway_surface->state->server.main_client;
 		uint32_t plugin_serial = bg_client->serial++;
 
-		if (surface->sway_surface->width == 0 || surface->sway_surface->height == 0) {
+		uint32_t config_width = surface->sway_surface->width, config_height = surface->sway_surface->height;
+		if (config_width == 0 || config_height == 0) {
 			swaylock_log(LOG_ERROR, "committing nested surface before main surface dimensions known");
 		}
 
@@ -163,7 +183,8 @@ static void nested_surface_commit(struct wl_client *client,
 		// but if the upsteam surface was configured long ago, then
 		// keep the configure local
 		if (!surface->sway_surface->used_first_configure) {
-			add_serial_pair(surface, surface->sway_surface->first_configure_serial, plugin_serial, false);
+			add_serial_pair(surface, surface->sway_surface->first_configure_serial, plugin_serial,
+				config_width, config_height, false);
 			surface->sway_surface->used_first_configure = true;
 		} else if (surface->sway_surface->has_newer_serial) {
 			/* In this case, the swaylock surface has received
@@ -172,14 +193,15 @@ static void nested_surface_commit(struct wl_client *client,
 			 * giving this client an up to date size, acknowledge
 			 * the corresponding configure when the client finally
 			 * responds. */
-			add_serial_pair(surface, surface->sway_surface->newest_serial, plugin_serial, false);
+			add_serial_pair(surface, surface->sway_surface->newest_serial, plugin_serial,
+				config_width, config_height, false);
 		} else {
 			/* Swallow plugin's configure event -- all upstream configures
 			 * were acknowledged by past clients */
-			add_serial_pair(surface, 0, plugin_serial, true);
+			add_serial_pair(surface, 0, plugin_serial, config_width, config_height, true);
 		}
 		zwlr_layer_surface_v1_send_configure(surface->layer_surface, plugin_serial,
-			surface->sway_surface->width, surface->sway_surface->height);
+			config_width, config_height);
 
 		surface->has_been_configured = true;
 
@@ -189,6 +211,19 @@ static void nested_surface_commit(struct wl_client *client,
 		/* The first commit should not be forwarded, because the main swaylock
 		 * process already made such a commit in order to receive its
 		 * own configure event. Thus, return here. */
+		return;
+	}
+
+	if (surface->committed.attachment == NULL && surface->pending.attachment == NULL) {
+		/* In this scenario, no buffer has been attached yet; there is no point in making
+		 * a second or further commit without a buffer, so don't bother committing anything.
+		 * (Note: other than the buffer, the surface state has nothing that risks dangling
+		 * if it neglects to commit, and there is no attached buffer.) */
+		return;
+	}
+	if (surface->committed.attachment != NULL && surface->pending.attachment == NULL) {
+		/* Good wallpaper clients should never unmap their surfaces. Kill it. */
+		wl_resource_post_error(resource, 1000, "The wallpaper program should not unmap any layer shell surface");
 		return;
 	}
 
@@ -220,9 +255,6 @@ static void nested_surface_commit(struct wl_client *client,
 			surface->pending.viewport_dest_height);
 		surface->committed.viewport_dest_width = surface->pending.viewport_dest_width;
 		surface->committed.viewport_dest_height = surface->pending.viewport_dest_height;
-		if (surface->pending.viewport_dest_width != -1 && surface->pending.viewport_dest_height != -1) {
-			// TODO: check that the viewport destination size exactly matches the output
-		}
 	}
 	if (surface->committed.viewport_source_x != surface->pending.viewport_source_x ||
 			surface->committed.viewport_source_y != surface->pending.viewport_source_y ||
@@ -248,23 +280,69 @@ static void nested_surface_commit(struct wl_client *client,
 			wl_list_remove(&surface->committed.attachment_link);
 		}
 
-		struct forward_buffer *upstream_buffer = surface->pending.attachment ?
-			surface->pending.attachment : NULL;
+		/* See above: null attachments are either bad wallpaper program behavior or need no commit */
+		assert(surface->pending.attachment != NULL);
+
+		struct forward_buffer *upstream_buffer = surface->pending.attachment;
+		int32_t offset_x =  wl_resource_get_version(resource) >= 5 ? 0 : surface->pending.offset_x;
+		int32_t offset_y =  wl_resource_get_version(resource) >= 5 ? 0 : surface->pending.offset_y;
 		wl_surface_attach(background,
 			upstream_buffer ? upstream_buffer->buffer : NULL,
-			surface->pending.offset_x, surface->pending.offset_y);
-
+			offset_x, offset_y);
+		if (wl_resource_get_version(resource) < 5) {
+			surface->committed.offset_x = surface->pending.offset_x;
+			surface->committed.offset_y = surface->pending.offset_y;
+		}
 		surface->committed.attachment = surface->pending.attachment;
-		wl_list_insert(&upstream_buffer->committed_surfaces, &surface->committed.attachment_link);
 
-		surface->committed.offset_x = surface->pending.offset_x;
-		surface->committed.offset_y = surface->pending.offset_y;
+		surface->committed_buffer_width = upstream_buffer->width;
+		surface->committed_buffer_height = upstream_buffer->height;
+		wl_list_insert(&upstream_buffer->committed_surfaces, &surface->committed.attachment_link);
 	}
+
+	wl_fixed_t n = wl_fixed_from_int(-1);
+	bool viewport_dst_on = surface->committed.viewport_dest_width != -1;
+	bool viewport_src_on = surface->committed.viewport_source_w != n;
+	uint32_t output_width, output_height;
+	if (viewport_dst_on) {
+		output_width = surface->committed.viewport_dest_width;
+		output_height = surface->committed.viewport_dest_height;
+	} else if (viewport_src_on) {
+		output_width = wl_fixed_to_int(surface->committed.viewport_source_w);
+		output_height = wl_fixed_to_int(surface->committed.viewport_source_h);
+		if (wl_fixed_from_int(output_width) != surface->committed.viewport_source_w ||
+			wl_fixed_from_int(output_height) != surface->committed.viewport_source_h) {
+			wl_resource_post_error(surface->viewport, WP_VIEWPORT_ERROR_BAD_SIZE, "width/height not integral");
+			return;
+		}
+		// TODO: technically, should also validate that the viewport dimensions fall inside the
+		// (transformed) buffer bounding box
+	} else {
+		if (surface->committed_buffer_width % surface->committed.buffer_scale != 0 ||
+			surface->committed_buffer_height % surface->committed.buffer_scale != 0) {
+			wl_resource_post_error(resource, WL_SURFACE_ERROR_INVALID_SIZE, "buffer dimensions not divisible by scale");
+			return;
+		}
+		output_width = surface->committed_buffer_width / surface->committed.buffer_scale;
+		output_height = surface->committed_buffer_height / surface->committed.buffer_scale;
+		if (does_transform_transpose_size(surface->committed.buffer_transform)) {
+			uint32_t tmp = output_width;
+			output_width = output_height;
+			output_height = tmp;
+		}
+	}
+	if (output_width != surface->last_acked_width || output_height != surface->last_acked_height) {
+		swaylock_log(LOG_ERROR, "Wallpaper program committed surface at size %d x %d, which does not exactly match last acknowledged W x H = %d x %d",
+			output_width, output_height, surface->last_acked_width, surface->last_acked_height);
+		wl_resource_post_error(resource, 1000, "The wallpaper program should exactly match the configure width/height");
+		return;
+	}
+
 	// TODO: verify that on scale or attachment change, the resulting size exactly matches the output
 
 	/* If there was an offset change, but no buffer value change */
-	if (surface->committed.offset_x != surface->pending.offset_x ||
-			surface->committed.offset_y != surface->pending.offset_y) {
+	if ((surface->committed.offset_x != surface->pending.offset_x ||
+			surface->committed.offset_y != surface->pending.offset_y) && wl_resource_get_version(resource) >= 5) {
 		wl_surface_offset(background, surface->pending.offset_x, surface->pending.offset_y);
 		surface->committed.offset_x = surface->pending.offset_x;
 		surface->committed.offset_y = surface->pending.offset_y;
@@ -330,6 +408,7 @@ static void nested_surface_set_buffer_transform(struct wl_client *client,
 	assert(wl_resource_instance_of(resource, &wl_surface_interface, &surface_impl));
 	struct forward_surface *surface = wl_resource_get_user_data(resource);
 	surface->pending.buffer_transform = transform;
+	// TODO: validate that the transform is valid;
 }
 static void nested_surface_set_buffer_scale(struct wl_client *client,
 		struct wl_resource *resource, int32_t scale) {
@@ -551,6 +630,8 @@ static void nested_shm_pool_create_buffer(struct wl_client *client,
 	buffer->resource = buf_resource;
 	wl_list_init(&buffer->pending_surfaces);
 	wl_list_init(&buffer->committed_surfaces);
+	buffer->width = width;
+	buffer->height = height;
 
 	buffer->buffer = wl_shm_pool_create_buffer(shm_pool,
 		offset, width, height, stride, format);
@@ -652,7 +733,6 @@ static void nested_dmabuf_params_create_immed(struct wl_client *client,
 
 	struct zwp_linux_buffer_params_v1 *params = wl_resource_get_user_data(resource);
 
-
 	struct forward_buffer *buffer = calloc(1, sizeof(struct forward_buffer));
 	if (!buffer) {
 		wl_client_post_no_memory(client);
@@ -661,6 +741,8 @@ static void nested_dmabuf_params_create_immed(struct wl_client *client,
 	buffer->resource = buffer_resource;
 	wl_list_init(&buffer->pending_surfaces);
 	wl_list_init(&buffer->committed_surfaces);
+	buffer->width = width;
+	buffer->height = height;
 
 	buffer->buffer = zwp_linux_buffer_params_v1_create_immed(params, width, height, format, flags);
 	if (!buffer->buffer) {
@@ -905,7 +987,9 @@ void bind_drm(struct wl_client *client, void *data,
 static void viewport_handle_resource_destroy(struct wl_resource *resource) {
 	assert(wl_resource_instance_of(resource, &wp_viewport_interface, &viewport_impl));
 	struct forward_surface *fwd_surface = wl_resource_get_user_data(resource);
-	fwd_surface->viewport = NULL;
+	if (fwd_surface) {
+		fwd_surface->viewport = NULL;
+	}
 }
 
 static void nested_viewport_destroy(struct wl_client *client,
@@ -991,7 +1075,9 @@ void bind_viewporter(struct wl_client *client, void *data,
 static void fractional_scale_handle_resource_destroy(struct wl_resource *resource) {
 	assert(wl_resource_instance_of(resource, &wp_fractional_scale_v1_interface, &fractional_scale_impl));
 	struct forward_surface *fwd_surface = wl_resource_get_user_data(resource);
-	fwd_surface->fractional_scale = NULL;
+	if (fwd_surface) {
+		fwd_surface->fractional_scale = NULL;
+	}
 }
 static void nested_fractional_scale_destroy(struct wl_client *client,
 		struct wl_resource *resource) {

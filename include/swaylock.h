@@ -194,6 +194,8 @@ struct forward_buffer {
 	struct wl_list pending_surfaces;
 	/* list of surfaces where buffer is committed */
 	struct wl_list committed_surfaces;
+	/* dimensions of the buffer */
+	uint32_t width, height;
 };
 /* BUFFER_UNREACHABLE is used for the committed buffer it it was been deleted
  * downstream
@@ -224,6 +226,11 @@ struct surface_state {
 struct serial_pair {
 	uint32_t plugin_serial;
 	uint32_t upstream_serial;
+	/* The width and height corresponding to the configure matching `plugin_serial`.
+	 * Used to verify the client submits buffers with dimensions actually matching its
+	 * configures. */
+	uint32_t config_width;
+	uint32_t config_height;
 	/* if true, plugin serial was not generated in response to an
 	 * upstream configure event; so do not forward acknowledgements. */
 	bool local_only;
@@ -245,6 +252,9 @@ struct forward_surface {
 	// double-buffered state
 	struct surface_state pending;
 	struct surface_state committed;
+	// copy of buffer size, to retain even in case attached buffer is destroyed after commit
+	uint32_t committed_buffer_width;
+	uint32_t committed_buffer_height;
 
 	/* damage is not, strictly speaking, double buffered */
 	struct damage_record *buffer_damage;
@@ -253,6 +263,7 @@ struct forward_surface {
 	size_t old_damage_len;
 
 	uint32_t last_used_plugin_serial;
+	uint32_t last_acked_width, last_acked_height;
 	struct serial_pair *serial_table;
 	size_t serial_table_len;
 
@@ -383,7 +394,8 @@ void send_dmabuf_feedback_data(struct wl_resource *feedback, const struct dmabuf
 /* use this to record that in response to the configure event with upstream_serial,
  * a configure event with downstream_serial was sent to the plugin surface.
  * If local_only=true, mark that the downstream serial does _not_ need forwarding. */
-void add_serial_pair(struct forward_surface *plugin_surface, uint32_t upstream_serial, uint32_t downstream_serial, bool local_only);
+void add_serial_pair(struct forward_surface *surf, uint32_t upstream_serial,
+	uint32_t downstream_serial, uint32_t width, uint32_t height, bool local_only);
 
 // There is exactly one swaylock_image for each -i argument
 struct swaylock_image {

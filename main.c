@@ -302,10 +302,9 @@ static void forward_configure(struct swaylock_surface *surface, bool first_confi
 				struct swaylock_bg_client *bg_client = surface->client ?
 					surface->client : surface->state->server.main_client;
 				uint32_t plugin_serial = bg_client->serial++;
-				add_serial_pair(surface->plugin_surface, serial, plugin_serial, false);
+				add_serial_pair(surface->plugin_surface, serial, plugin_serial, surface->width, surface->height, false);
 				zwlr_layer_surface_v1_send_configure(surface->plugin_surface->layer_surface,
-						plugin_serial,
-					surface->width, surface->height);
+					plugin_serial, surface->width, surface->height);
 			}
 		}
 	}
@@ -335,6 +334,7 @@ static void ext_session_lock_surface_v1_handle_configure(void *data,
 		surface->has_newer_serial = true;
 	} else {
 		ext_session_lock_surface_v1_ack_configure(surface->ext_session_lock_surface_v1, serial);
+		surface->has_newer_serial = false;
 		render_fallback_surface(surface);
 	}
 	if (surface->has_buffer) {
@@ -1638,9 +1638,12 @@ static void zwlr_layer_surface_ack_configure(struct wl_client *client,
 		// fprintf(stderr, "serial check (%zu): %u -> %u =? %u\n", i, plugin_surf->serial_table[i].upstream_serial,
 		//	plugin_surf->serial_table[i].plugin_serial, serial);
 		if (plugin_surf->serial_table[i].plugin_serial == serial) {
-			upstream_serial = plugin_surf->serial_table[i].upstream_serial;
+			struct serial_pair entry = plugin_surf->serial_table[i];
+			upstream_serial = entry.upstream_serial;
 			found_serial = true;
-			bool local_only = plugin_surf->serial_table[i].local_only;
+			bool local_only = entry.local_only;
+			plugin_surf->last_acked_width = entry.config_width;
+			plugin_surf->last_acked_height = entry.config_height;
 
 			/* once a serial is used, discard both it and serials older than it */
 			memmove(plugin_surf->serial_table, plugin_surf->serial_table + (i + 1),
@@ -1833,11 +1836,10 @@ static void setup_clientless_mode(struct swaylock_state *state) {
 		}
 
 		if (!surface->has_buffer) {
-			// i.e, swaylock surface received its first configure,
-			// but the nested client has not yet assigned a buffer,
-			// so that configure has not been replied to. (This may be wrong)
-			ext_session_lock_surface_v1_ack_configure(surface->ext_session_lock_surface_v1, surface->first_configure_serial);
-			if (surface->first_configure_serial == surface->newest_serial) {
+			/* Reply to most recent configure, if the nested client did not already do so
+			 * before it died. */
+			if (surface->has_newer_serial) {
+				ext_session_lock_surface_v1_ack_configure(surface->ext_session_lock_surface_v1, surface->newest_serial);
 				surface->has_newer_serial = false;
 			}
 			render_fallback_surface(surface);

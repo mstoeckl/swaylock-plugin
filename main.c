@@ -1626,8 +1626,18 @@ static void zwlr_layer_surface_ack_configure(struct wl_client *client,
 	surface->pending_upstream_serial = upstream_serial;
 }
 static void zwlr_layer_surface_destroy(struct wl_client *client,
-	struct wl_resource *resource) {
+		struct wl_resource *resource) {
 	/* no resource to clean up */
+}
+
+static void zwlr_layer_surface_set_layer(struct wl_client *client,
+		struct wl_resource *resource, uint32_t layer) {
+	/* ignore this, will always fill the entire output */
+}
+
+static void zwlr_layer_surface_set_exclusive_edge(struct wl_client *client,
+		struct wl_resource *resource, uint32_t edge) {
+	/* ignore this, will always fill the entire output */
 }
 
 static const struct zwlr_layer_surface_v1_interface layer_surface_impl = {
@@ -1639,6 +1649,8 @@ static const struct zwlr_layer_surface_v1_interface layer_surface_impl = {
 	.get_popup = zwlr_layer_surface_get_popup,
 	.ack_configure = zwlr_layer_surface_ack_configure,
 	.destroy = zwlr_layer_surface_destroy,
+	.set_layer = zwlr_layer_surface_set_layer,
+	.set_exclusive_edge = zwlr_layer_surface_set_exclusive_edge,
 };
 
 void wlr_layer_shell_get_layer_surface(struct wl_client *client,
@@ -2354,7 +2366,7 @@ int main(int argc, char **argv) {
 	// Fortunately, the _interface_ structs are identical between
 	// wayland-client and wayland-server
 	state.server.wlr_layer_shell = wl_global_create(state.server.display,
-		&zwlr_layer_shell_v1_interface, 1, &state, bind_wlr_layer_shell);
+		&zwlr_layer_shell_v1_interface, 5, &state, bind_wlr_layer_shell);
 	state.server.xdg_output_manager = wl_global_create(state.server.display,
 		&zxdg_output_manager_v1_interface, 2, NULL, bind_xdg_output_manager);
 

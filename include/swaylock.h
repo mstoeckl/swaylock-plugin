@@ -10,6 +10,8 @@
 #include "seat.h"
 #include "linux-dmabuf-unstable-v1-client-protocol.h"
 #include "wayland-drm-client-protocol.h"
+#include "fractional-scale-v1-client-protocol.h"
+#include "viewporter-client-protocol.h"
 
 // Indicator state: status of authentication attempt
 enum auth_state {
@@ -114,6 +116,8 @@ struct swaylock_bg_server {
 	struct wl_global *xdg_output_manager;
 	struct wl_global *zwp_linux_dmabuf;
 	struct wl_global *drm;
+	struct wl_global *wp_fractional_scale;
+	struct wl_global *wp_viewporter;
 
 	struct wl_list clients;
 	/* If not NULL, this client provides buffers for all surfaces */
@@ -164,6 +168,9 @@ struct forward_state {
 	 * and a well designed background shouldn't need them anyway. */
 	struct wl_compositor *compositor;
 
+	struct wp_viewporter *viewporter;
+	struct wp_fractional_scale_manager_v1 *fractional_scale;
+
 	uint32_t *shm_formats;
 	uint32_t shm_formats_len;
 
@@ -204,6 +211,14 @@ struct surface_state {
 	int32_t offset_x, offset_y;
 	int32_t buffer_scale;
 	int32_t buffer_transform;
+
+	/* Viewport state */
+	wl_fixed_t viewport_source_x;
+	wl_fixed_t viewport_source_y;
+	wl_fixed_t viewport_source_w;
+	wl_fixed_t viewport_source_h;
+	int32_t viewport_dest_width;
+	int32_t viewport_dest_height;
 };
 
 struct serial_pair {
@@ -240,6 +255,12 @@ struct forward_surface {
 	uint32_t last_used_plugin_serial;
 	struct serial_pair *serial_table;
 	size_t serial_table_len;
+
+	/* The unique viewport resource attached to the surface, if any */
+	struct wl_resource *viewport;
+
+	/* The unique fractional_scale resource attached to the surface, if any */
+	struct wl_resource *fractional_scale;
 };
 
 struct swaylock_state {
@@ -289,6 +310,9 @@ struct swaylock_surface {
 	struct forward_surface *plugin_surface;
 
 	struct ext_session_lock_surface_v1 *ext_session_lock_surface_v1;
+	struct wp_viewport *viewport;
+	struct wp_fractional_scale_v1* fractional_scale;
+	uint32_t last_fractional_scale; /* is zero if nothing received yet */
 	struct pool_buffer indicator_buffers[2];
 	bool created;
 	bool frame_pending, dirty;
@@ -352,6 +376,8 @@ void bind_wl_compositor(struct wl_client *client, void *data, uint32_t version, 
 void bind_wl_shm(struct wl_client *client, void *data, uint32_t version, uint32_t id);
 void bind_linux_dmabuf(struct wl_client *client, void *data, uint32_t version, uint32_t id);
 void bind_drm(struct wl_client *client, void *data, uint32_t version, uint32_t id);
+void bind_viewporter(struct wl_client *client, void *data, uint32_t version, uint32_t id);
+void bind_fractional_scale(struct wl_client *client, void *data, uint32_t version, uint32_t id);
 void send_dmabuf_feedback_data(struct wl_resource *feedback, const struct dmabuf_feedback_state *state);
 
 /* use this to record that in response to the configure event with upstream_serial,

@@ -13,6 +13,8 @@
 #include "wayland-drm-server-protocol.h"
 #include "wlr-layer-shell-unstable-v1-server-protocol.h"
 #include "ext-session-lock-v1-client-protocol.h"
+#include "fractional-scale-v1-server-protocol.h"
+#include "viewporter-server-protocol.h"
 
 static const struct wl_surface_interface surface_impl;
 static const struct wl_buffer_interface buffer_impl;
@@ -20,6 +22,8 @@ static const struct wl_shm_pool_interface shm_pool_impl;
 static const struct wl_compositor_interface compositor_impl;
 static const struct zwp_linux_buffer_params_v1_interface linux_dmabuf_params_impl;
 static const struct zwp_linux_dmabuf_feedback_v1_interface linux_dmabuf_feedback_v1_impl;
+static const struct wp_viewport_interface viewport_impl;
+static const struct wp_fractional_scale_v1_interface fractional_scale_impl;
 
 static void nested_surface_destroy(struct wl_client *client,
 		struct wl_resource *resource) {
@@ -209,6 +213,30 @@ static void nested_surface_commit(struct wl_client *client,
 		wl_surface_set_buffer_transform(background, surface->pending.buffer_transform);
 		surface->committed.buffer_transform = surface->pending.buffer_transform;
 	}
+	if (surface->committed.viewport_dest_width != surface->pending.viewport_dest_width ||
+			surface->committed.viewport_dest_height != surface->pending.viewport_dest_height) {
+		assert(sw_surf->viewport);
+		wp_viewport_set_destination(sw_surf->viewport, surface->pending.viewport_dest_width,
+			surface->pending.viewport_dest_height);
+		surface->committed.viewport_dest_width = surface->pending.viewport_dest_width;
+		surface->committed.viewport_dest_height = surface->pending.viewport_dest_height;
+		if (surface->pending.viewport_dest_width != -1 && surface->pending.viewport_dest_height != -1) {
+			// TODO: check that the viewport destination size exactly matches the output
+		}
+	}
+	if (surface->committed.viewport_source_x != surface->pending.viewport_source_x ||
+			surface->committed.viewport_source_y != surface->pending.viewport_source_y ||
+			surface->committed.viewport_source_w != surface->pending.viewport_source_w ||
+			surface->committed.viewport_source_h != surface->pending.viewport_source_h) {
+		assert(sw_surf->viewport);
+		wp_viewport_set_source(sw_surf->viewport,
+			surface->committed.viewport_source_x, surface->committed.viewport_source_y,
+			surface->committed.viewport_source_w, surface->committed.viewport_source_h);
+		surface->committed.viewport_source_x = surface->pending.viewport_source_x;
+		surface->committed.viewport_source_y = surface->pending.viewport_source_y;
+		surface->committed.viewport_source_w = surface->pending.viewport_source_w;
+		surface->committed.viewport_source_h = surface->pending.viewport_source_h;
+	}
 	// The protocol does not make this fully explicit, but the buffer should
 	// be attached _each time_ that any damage is sent alongside it, even if
 	// the buffer is the same. This is also necessary to ensure that the
@@ -232,6 +260,8 @@ static void nested_surface_commit(struct wl_client *client,
 		surface->committed.offset_x = surface->pending.offset_x;
 		surface->committed.offset_y = surface->pending.offset_y;
 	}
+	// TODO: verify that on scale or attachment change, the resulting size exactly matches the output
+
 	/* If there was an offset change, but no buffer value change */
 	if (surface->committed.offset_x != surface->pending.offset_x ||
 			surface->committed.offset_y != surface->pending.offset_y) {
@@ -368,6 +398,13 @@ static void surface_handle_resource_destroy(struct wl_resource *resource) {
 	free(fwd_surface->old_damage);
 	free(fwd_surface->serial_table);
 
+	if (fwd_surface->viewport) {
+		wl_resource_set_user_data(fwd_surface->viewport, NULL);
+	}
+	if (fwd_surface->fractional_scale) {
+		wl_resource_set_user_data(fwd_surface->fractional_scale, NULL);
+	}
+
 	free(fwd_surface);
 }
 
@@ -388,6 +425,19 @@ static void compositor_create_surface(struct wl_client *client,
 		return;
 	}
 	wl_list_init(&fwd_surface->frame_callbacks);
+	wl_fixed_t n = wl_fixed_from_int(-1);
+	fwd_surface->pending.viewport_dest_height = -1;
+	fwd_surface->pending.viewport_dest_width = -1;
+	fwd_surface->pending.viewport_source_x = n;
+	fwd_surface->pending.viewport_source_y = n;
+	fwd_surface->pending.viewport_source_w = n;
+	fwd_surface->pending.viewport_source_h = n;
+	fwd_surface->committed.viewport_dest_height = -1;
+	fwd_surface->committed.viewport_dest_width = -1;
+	fwd_surface->committed.viewport_source_x = n;
+	fwd_surface->committed.viewport_source_y = n;
+	fwd_surface->committed.viewport_source_w = n;
+	fwd_surface->committed.viewport_source_h = n;
 
 	wl_resource_set_implementation(surf_resource, &surface_impl,
 		fwd_surface, surface_handle_resource_destroy);
@@ -852,4 +902,146 @@ void bind_drm(struct wl_client *client, void *data,
 	wl_resource_set_implementation(resource, &wl_drm_impl, data, NULL);
 }
 
+static void viewport_handle_resource_destroy(struct wl_resource *resource) {
+	assert(wl_resource_instance_of(resource, &wp_viewport_interface, &viewport_impl));
+	struct forward_surface *fwd_surface = wl_resource_get_user_data(resource);
+	fwd_surface->viewport = NULL;
+}
+
+static void nested_viewport_destroy(struct wl_client *client,
+	struct wl_resource *resource) {
+	/* `viewport_handle_resource_destroy` will be invoked */
+	wl_resource_destroy(resource);
+}
+
+static void nested_viewport_set_source(struct wl_client *client, struct wl_resource *resource,
+		wl_fixed_t x, wl_fixed_t y, wl_fixed_t width, wl_fixed_t height) {
+	assert(wl_resource_instance_of(resource, &wp_viewport_interface, &viewport_impl));
+	struct forward_surface *fwd_surface = wl_resource_get_user_data(resource);
+	wl_fixed_t n = wl_fixed_from_int(-1);
+	bool no_source = x == n && y == n && width == n && height == n;
+	if ((x < 0 || y < 0 || width <= 0 || height <= 0) && !no_source) {
+		wl_resource_post_error(resource, WP_VIEWPORT_ERROR_BAD_VALUE, "invalid x/y/width/height for set_source");
+	} else {
+		fwd_surface->pending.viewport_source_x = x;
+		fwd_surface->pending.viewport_source_y = y;
+		fwd_surface->pending.viewport_source_w = width;
+		fwd_surface->pending.viewport_source_h = height;
+	}
+}
+
+static void nested_viewport_set_destination(struct wl_client *client, struct wl_resource *resource,
+		int32_t width, int32_t height) {
+	assert(wl_resource_instance_of(resource, &wp_viewport_interface, &viewport_impl));
+	struct forward_surface *fwd_surface = wl_resource_get_user_data(resource);
+	if ((width <= 0 || height <= 0) && !(width == -1 && height == -1)) {
+		wl_resource_post_error(resource, WP_VIEWPORT_ERROR_BAD_VALUE, "invalid width/height pair for set_destination");
+	} else {
+		fwd_surface->pending.viewport_dest_width = width;
+		fwd_surface->pending.viewport_dest_height = height;
+	}
+}
+
+static const struct wp_viewport_interface viewport_impl = {
+	.destroy = nested_viewport_destroy,
+	.set_source = nested_viewport_set_source,
+	.set_destination = nested_viewport_set_destination,
+};
+
+static void nested_viewporter_destroy(struct wl_client *client, struct wl_resource *resource) {
+	wl_resource_destroy(resource);
+}
+
+static void nested_viewporter_get_viewport(struct wl_client *client, struct wl_resource *resource,
+		uint32_t id, struct wl_resource *surface) {
+	struct forward_surface *forward_surf = wl_resource_get_user_data(surface);
+	/* Each surface has at most one wp_viewport associated */
+	if (forward_surf->viewport) {
+		wl_resource_post_error(resource, WP_VIEWPORTER_ERROR_VIEWPORT_EXISTS, "viewport already exists");
+	}
+
+	struct wl_resource *viewport_resource = wl_resource_create(client, &wp_viewport_interface,
+		wl_resource_get_version(resource), id);
+	if (viewport_resource == NULL) {
+		wl_client_post_no_memory(client);
+		return;
+	}
+	forward_surf->viewport = viewport_resource;
+	wl_resource_set_implementation(viewport_resource, &viewport_impl,
+		forward_surf, viewport_handle_resource_destroy);
+}
+
+static const struct wp_viewporter_interface viewporter_impl = {
+	.destroy = nested_viewporter_destroy,
+	.get_viewport = nested_viewporter_get_viewport,
+};
+
+void bind_viewporter(struct wl_client *client, void *data,
+		uint32_t version, uint32_t id) {
+	struct wl_resource *resource =
+		wl_resource_create(client, &wp_viewporter_interface, version, id);
+	if (resource == NULL) {
+		wl_client_post_no_memory(client);
+		return;
+	}
+	struct forward_state *forward = data;
+	wl_resource_set_implementation(resource, &viewporter_impl, forward, NULL);
+}
+
+static void fractional_scale_handle_resource_destroy(struct wl_resource *resource) {
+	assert(wl_resource_instance_of(resource, &wp_fractional_scale_v1_interface, &fractional_scale_impl));
+	struct forward_surface *fwd_surface = wl_resource_get_user_data(resource);
+	fwd_surface->fractional_scale = NULL;
+}
+static void nested_fractional_scale_destroy(struct wl_client *client,
+		struct wl_resource *resource) {
+	/* `fractional_scale_handle_resource_destroy` will be invoked */
+	wl_resource_destroy(resource);
+}
+static const struct wp_fractional_scale_v1_interface fractional_scale_impl = {
+	.destroy = nested_fractional_scale_destroy,
+};
+
+static void nested_fractional_scale_manager_destroy(struct wl_client *client, struct wl_resource *resource) {
+	/* nothing to do */
+}
+static void nested_fractional_scale_manager_get_fractional_scale(struct wl_client *client,
+		struct wl_resource *resource, uint32_t id, struct wl_resource *surface) {
+	struct forward_surface *forward_surf = wl_resource_get_user_data(surface);
+	/* Each surface has at most one wp_fractional_scale associated */
+	if (forward_surf->fractional_scale) {
+		wl_resource_post_error(resource, WP_FRACTIONAL_SCALE_MANAGER_V1_ERROR_FRACTIONAL_SCALE_EXISTS, "fractional scale already exists");
+	}
+
+	struct wl_resource *scale_resource = wl_resource_create(client, &wp_fractional_scale_v1_interface,
+		wl_resource_get_version(resource), id);
+	if (scale_resource == NULL) {
+		wl_client_post_no_memory(client);
+		return;
+	}
+	forward_surf->fractional_scale = scale_resource;
+	if (forward_surf->sway_surface && forward_surf->sway_surface->last_fractional_scale > 0) {
+		wp_fractional_scale_v1_send_preferred_scale(scale_resource,
+			forward_surf->sway_surface->last_fractional_scale);
+	}
+	wl_resource_set_implementation(scale_resource, &fractional_scale_impl,
+		forward_surf, fractional_scale_handle_resource_destroy);
+}
+
+static const struct wp_fractional_scale_manager_v1_interface fractional_scale_manager_impl = {
+	.destroy = nested_fractional_scale_manager_destroy,
+	.get_fractional_scale = nested_fractional_scale_manager_get_fractional_scale,
+};
+
+void bind_fractional_scale(struct wl_client *client, void *data,
+		uint32_t version, uint32_t id) {
+	struct wl_resource *resource =
+		wl_resource_create(client, &wp_fractional_scale_manager_v1_interface, version, id);
+	if (resource == NULL) {
+		wl_client_post_no_memory(client);
+		return;
+	}
+	struct forward_state *forward = data;
+	wl_resource_set_implementation(resource, &fractional_scale_manager_impl, forward, NULL);
+}
 

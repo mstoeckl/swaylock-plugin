@@ -80,11 +80,15 @@ client_protocols = [
 	wl_protocol_dir / 'unstable/xdg-output/xdg-output-unstable-v1.xml',
 	wl_protocol_dir / 'unstable/fullscreen-shell/fullscreen-shell-unstable-v1.xml',
 	wl_protocol_dir / 'unstable/linux-dmabuf/linux-dmabuf-unstable-v1.xml',
+	wl_protocol_dir / 'stable/viewporter/viewporter.xml',
+	wl_protocol_dir / 'staging/fractional-scale/fractional-scale-v1.xml',
 	'wayland-drm.xml',
 ]
 server_protocols = [
 	wl_protocol_dir / 'unstable/xdg-output/xdg-output-unstable-v1.xml',
 	wl_protocol_dir / 'unstable/linux-dmabuf/linux-dmabuf-unstable-v1.xml',
+	wl_protocol_dir / 'stable/viewporter/viewporter.xml',
+	wl_protocol_dir / 'staging/fractional-scale/fractional-scale-v1.xml',
 	'wlr-layer-shell-unstable-v1.xml',
 	'wayland-drm.xml',
 ]

@@ -31,10 +31,12 @@
 #include "swaylock.h"
 #include "ext-session-lock-v1-client-protocol.h"
 #include "xdg-output-unstable-v1-client-protocol.h"
-#include "fullscreen-shell-unstable-v1-client-protocol.h"
 #include "xdg-output-unstable-v1-server-protocol.h"
+#include "fullscreen-shell-unstable-v1-client-protocol.h"
 #include "wlr-layer-shell-unstable-v1-server-protocol.h"
 #include "linux-dmabuf-unstable-v1-client-protocol.h"
+#include "fractional-scale-v1-server-protocol.h"
+#include "viewporter-server-protocol.h"
 
 #define WL_OUTPUT_MM_PER_PIX 0.264
 #define WL_OUTPUT_VERSION 4
@@ -157,6 +159,12 @@ static void destroy_surface(struct swaylock_surface *surface) {
 	if (surface->ext_session_lock_surface_v1 != NULL) {
 		ext_session_lock_surface_v1_destroy(surface->ext_session_lock_surface_v1);
 	}
+	if (surface->fractional_scale) {
+		wp_fractional_scale_v1_destroy(surface->fractional_scale);
+	}
+	if (surface->viewport) {
+		wp_viewport_destroy(surface->viewport);
+	}
 	if (surface->subsurface) {
 		wl_subsurface_destroy(surface->subsurface);
 	}
@@ -173,6 +181,26 @@ static void destroy_surface(struct swaylock_surface *surface) {
 }
 
 static const struct ext_session_lock_surface_v1_listener ext_session_lock_surface_v1_listener;
+
+static void fract_scale_preferred_scale(void *data, struct wp_fractional_scale_v1 *wp_fractional_scale_v1,
+		uint32_t scale) {
+	struct swaylock_surface *surface = data;
+	assert(scale > 0);
+	if (surface->last_fractional_scale == scale) {
+		return;
+	}
+	/* Forward the fractional scale update to plugin surface, if one is present */
+	surface->last_fractional_scale = scale;
+	if (surface->plugin_surface) {
+		if (surface->plugin_surface->fractional_scale) {
+			wp_fractional_scale_v1_send_preferred_scale(surface->plugin_surface->fractional_scale, scale);
+		}
+	}
+}
+
+static const struct wp_fractional_scale_v1_listener  fract_scale_listener = {
+	.preferred_scale = fract_scale_preferred_scale,
+};
 
 static cairo_surface_t *select_image(struct swaylock_state *state,
 		struct swaylock_surface *surface);
@@ -211,6 +239,18 @@ static void create_surface(struct swaylock_surface *surface) {
 		wl_region_add(region, 0, 0, INT32_MAX, INT32_MAX);
 		wl_surface_set_opaque_region(surface->surface, region);
 		wl_region_destroy(region);
+	}
+
+	if (state->forward.fractional_scale) {
+		surface->fractional_scale = wp_fractional_scale_manager_v1_get_fractional_scale(
+			state->forward.fractional_scale, surface->surface);
+		wp_fractional_scale_v1_add_listener(surface->fractional_scale, &fract_scale_listener, surface);
+		assert(surface->fractional_scale);
+	}
+
+	if (state->forward.viewporter) {
+		surface->viewport = wp_viewporter_get_viewport(state->forward.viewporter, surface->surface);
+		assert(surface->viewport);
 	}
 
 	// Plugin should provide a surface quickly enough, after compositor
@@ -651,6 +691,12 @@ static void handle_global(void *data, struct wl_registry *registry,
 	} else if (strcmp(interface, ext_session_lock_manager_v1_interface.name) == 0) {
 		state->ext_session_lock_manager_v1 = wl_registry_bind(registry, name,
 				&ext_session_lock_manager_v1_interface, 1);
+	} else if (strcmp(interface, wp_fractional_scale_manager_v1_interface.name) == 0) {
+		state->forward.fractional_scale = wl_registry_bind(registry, name,
+			&wp_fractional_scale_manager_v1_interface, version >= 1 ? 1 : version);
+	} else if (strcmp(interface, wp_viewporter_interface.name) == 0) {
+		state->forward.viewporter = wl_registry_bind(registry, name,
+			&wp_viewporter_interface, version >= 1 ? 1 : version);
 	}
 }
 
@@ -1717,6 +1763,12 @@ void wlr_layer_shell_get_layer_surface(struct wl_client *client,
 
 	surf->layer_surface = layer_surface_resource;
 
+	/* Notify client immediately of surface fractional scale, if possible and it is available */
+	if (sw_surface->last_fractional_scale > 0 && surf->fractional_scale) {
+		wp_fractional_scale_v1_send_preferred_scale(surf->fractional_scale,
+			sw_surface->last_fractional_scale);
+	}
+
 	// todo: when plugin surface commits, proceed?
 }
 
@@ -1738,7 +1790,7 @@ static void bind_wlr_layer_shell(struct wl_client *client, void *data, uint32_t 
 static void render_fallback_surface(struct swaylock_surface *surface) {
 	// create a new buffer each time; this is a fallback path, so efficiency
 	// is much less important than correctness. That being said, if wp_viewporter
-	// were available, one could make a single-pixel buffer in advance
+	// were always available, one could instead make a single-pixel buffer in advance
 
 	struct pool_buffer buffer;
 	if (!create_buffer(surface->state->shm, &buffer, surface->width, surface->height,
@@ -2369,7 +2421,14 @@ int main(int argc, char **argv) {
 		&zwlr_layer_shell_v1_interface, 5, &state, bind_wlr_layer_shell);
 	state.server.xdg_output_manager = wl_global_create(state.server.display,
 		&zxdg_output_manager_v1_interface, 2, NULL, bind_xdg_output_manager);
-
+	if (state.forward.fractional_scale) {
+		state.server.wp_fractional_scale = wl_global_create(state.server.display,
+			&wp_fractional_scale_manager_v1_interface, 1, &state.forward, bind_fractional_scale);
+	}
+	if (state.forward.viewporter) {
+		state.server.wp_viewporter = wl_global_create(state.server.display,
+			&wp_viewporter_interface, 1, &state.forward, bind_viewporter);
+	}
 	state.server.loop = wl_display_get_event_loop(state.server.display);
 
 	// Start the plugin (assuming it applies to all outputs)

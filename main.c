@@ -50,6 +50,7 @@ static void render_fallback_surface(struct swaylock_surface *surface);
 static void output_redraw_timeout(void *data);
 static bool run_plugin_command(struct swaylock_state *state, struct swaylock_surface *output);
 static void setup_clientless_mode(struct swaylock_state *state);
+static void cleanup_client(struct swaylock_bg_client *bg_client);
 
 extern char **environ;
 
@@ -1846,12 +1847,14 @@ static void setup_clientless_mode(struct swaylock_state *state) {
 
 
 static void client_timeout(struct swaylock_bg_client *bg_client) {
-	wl_list_remove(&bg_client->client_destroy_listener.link);
-
 	struct swaylock_state *state = bg_client->state;
 
-	// Destroying the client will free the bg_client
+	// Destroy and cleanup client directly, instead of using the default destroy
+	// listener (which handles auto-restart, among other things)
+	wl_list_remove(&bg_client->client_destroy_listener.link);
+	wl_list_init(&bg_client->client_destroy_listener.link);
 	wl_client_destroy(bg_client->client);
+	cleanup_client(bg_client);
 
 	setup_clientless_mode(state);
 }
@@ -2002,23 +2005,16 @@ static void client_resource_create(struct wl_listener *listener, void *data) {
 	wl_list_init(&listener->link);
 }
 
-static void client_destroyed(struct wl_listener *listener, void *data) {
-	struct swaylock_bg_client *bg_client = wl_container_of(listener, bg_client, client_destroy_listener);
-	struct wl_client *client = data;
-	if (client != bg_client->client) {
-		swaylock_log(LOG_ERROR, "Client destroy callback does not match actual client");
-		return;
-	}
+/* Cleans up and frees the client, but does not start a new one */
+static void cleanup_client(struct swaylock_bg_client *bg_client) {
 	wl_list_remove(&bg_client->link);
 
 	if (bg_client->client_connect_timer) {
 		loop_remove_timer(bg_client->state->eventloop, bg_client->client_connect_timer);
 	}
 
-	bool made_a_registry = bg_client->made_a_registry;
 	struct swaylock_state *state = bg_client->state;
 	struct swaylock_surface *output_surface = bg_client->unique_output;
-
 	if (output_surface) {
 		output_surface->client = NULL;
 	} else {
@@ -2026,6 +2022,20 @@ static void client_destroyed(struct wl_listener *listener, void *data) {
 	}
 
 	free(bg_client);
+}
+
+static void client_destroyed(struct wl_listener *listener, void *data) {
+	struct swaylock_bg_client *bg_client = wl_container_of(listener, bg_client, client_destroy_listener);
+	struct wl_client *client = data;
+	if (client != bg_client->client) {
+		swaylock_log(LOG_ERROR, "Client destroy callback does not match actual client");
+		return;
+	}
+
+	struct swaylock_state *state = bg_client->state;
+	struct swaylock_surface *output_surface = bg_client->unique_output;
+	bool made_a_registry = bg_client->made_a_registry;
+	cleanup_client(bg_client);
 
 	// Restart the command, ONLY if it successfully did something the last time
 	// A one-shot program like wayland-info will still cycle indefinitely, so

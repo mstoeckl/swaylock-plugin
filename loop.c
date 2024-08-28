@@ -14,6 +14,7 @@
 struct loop_fd_event {
 	void (*callback)(int fd, short mask, void *data);
 	void *data;
+	bool removed;
 	struct wl_list link; // struct loop_fd_event::link
 };
 
@@ -92,6 +93,11 @@ void loop_poll(struct loop *loop) {
 	struct loop_fd_event *event = NULL, *tmp_event = NULL;
 	wl_list_for_each_safe(event, tmp_event, &loop->fd_events, link) {
 		struct pollfd pfd = loop->fds[fd_index];
+		++fd_index;
+
+		if (event->removed) {
+			continue;
+		}
 
 		// Always send these events
 		unsigned events = pfd.events | POLLHUP | POLLERR;
@@ -99,8 +105,20 @@ void loop_poll(struct loop *loop) {
 		if (pfd.revents & events) {
 			event->callback(pfd.fd, pfd.revents, event->data);
 		}
+	}
 
-		++fd_index;
+	// Free removed fd events
+	fd_index = 0;
+	wl_list_for_each_safe(event, tmp_event, &loop->fd_events, link) {
+		if (event->removed) {
+			wl_list_remove(&event->link);
+			free(event);
+			loop->fd_length--;
+			memmove(&loop->fds[fd_index], &loop->fds[fd_index + 1],
+				sizeof(struct pollfd) * (loop->fd_length - fd_index));
+		} else {
+			fd_index++;
+		}
 	}
 
 	// Dispatch timers
@@ -179,12 +197,7 @@ bool loop_remove_fd(struct loop *loop, int fd) {
 	struct loop_fd_event *event = NULL, *tmp_event = NULL;
 	wl_list_for_each_safe(event, tmp_event, &loop->fd_events, link) {
 		if (loop->fds[fd_index].fd == fd) {
-			wl_list_remove(&event->link);
-			free(event);
-
-			loop->fd_length--;
-			memmove(&loop->fds[fd_index], &loop->fds[fd_index + 1],
-					sizeof(struct pollfd) * (loop->fd_length - fd_index));
+			event->removed = true;
 			return true;
 		}
 		++fd_index;

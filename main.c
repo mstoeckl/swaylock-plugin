@@ -1591,12 +1591,8 @@ static void bind_wl_output(struct wl_client *client, void *data,
 
 static void zwlr_layer_surface_set_size(struct wl_client *client,
 		struct wl_resource *resource, uint32_t width, uint32_t height) {
-	/* ignore this, will send configure as needed */
-	/* or alternatively, check that width=height=0 is sent, if anything ?*/
-	if (width != 0 || height != 0) {
-		swaylock_log(LOG_ERROR, "Warning, layer surface client requesting specific size -- unlikely to be background type");
-		return;
-	}
+	/* ignore this; wallpaper clients either send 0x0 or output width x height,
+	 * but in the end the committed surface size is used for ext_session_lock. */
 }
 static void zwlr_layer_surface_set_anchor(struct wl_client *client,
 		struct wl_resource *resource, uint32_t anchor) {

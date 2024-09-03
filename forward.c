@@ -487,6 +487,22 @@ static void surface_handle_resource_destroy(struct wl_resource *resource) {
 	free(fwd_surface);
 }
 
+static void default_surface_state(struct surface_state *state) {
+	wl_fixed_t n = wl_fixed_from_int(-1);
+	state->viewport_dest_height = -1;
+	state->viewport_dest_width = -1;
+	state->viewport_source_x = n;
+	state->viewport_source_y = n;
+	state->viewport_source_w = n;
+	state->viewport_source_h = n;
+	state->buffer_scale = 1;
+	state->buffer_transform = WL_OUTPUT_TRANSFORM_NORMAL;
+	state->offset_x = 0;
+	state->offset_y = 0;
+	state->attachment = NULL;
+	// state->attachment_link is only used when attachment is not NULL
+}
+
 static void compositor_create_surface(struct wl_client *client,
 		struct wl_resource *resource, uint32_t id) {
 	assert(wl_resource_instance_of(resource, &wl_compositor_interface, &compositor_impl));
@@ -504,19 +520,8 @@ static void compositor_create_surface(struct wl_client *client,
 		return;
 	}
 	wl_list_init(&fwd_surface->frame_callbacks);
-	wl_fixed_t n = wl_fixed_from_int(-1);
-	fwd_surface->pending.viewport_dest_height = -1;
-	fwd_surface->pending.viewport_dest_width = -1;
-	fwd_surface->pending.viewport_source_x = n;
-	fwd_surface->pending.viewport_source_y = n;
-	fwd_surface->pending.viewport_source_w = n;
-	fwd_surface->pending.viewport_source_h = n;
-	fwd_surface->committed.viewport_dest_height = -1;
-	fwd_surface->committed.viewport_dest_width = -1;
-	fwd_surface->committed.viewport_source_x = n;
-	fwd_surface->committed.viewport_source_y = n;
-	fwd_surface->committed.viewport_source_w = n;
-	fwd_surface->committed.viewport_source_h = n;
+	default_surface_state(&fwd_surface->pending);
+	default_surface_state(&fwd_surface->committed);
 
 	wl_resource_set_implementation(surf_resource, &surface_impl,
 		fwd_surface, surface_handle_resource_destroy);

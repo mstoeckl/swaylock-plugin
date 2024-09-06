@@ -338,9 +338,9 @@ static void ext_session_lock_surface_v1_handle_configure(void *data,
 		surface->has_newer_serial = false;
 		render_fallback_surface(surface);
 	}
-	if (surface->has_buffer) {
-		render_frame(surface);
-	}
+	surface->dirty = true;
+	render(surface);
+
 	if (size_change && !first_configure) {
 		// Only start timer if the old one has entirely elapsed.
 		// todo: eventually launch timers for every-configure that
@@ -357,58 +357,11 @@ static const struct ext_session_lock_surface_v1_listener ext_session_lock_surfac
 	.configure = ext_session_lock_surface_v1_handle_configure,
 };
 
-static const struct wl_callback_listener surface_frame_listener;
-
-static void surface_frame_handle_done(void *data, struct wl_callback *callback,
-		uint32_t time) {
-	struct swaylock_surface *surface = data;
-
-	wl_callback_destroy(callback);
-	surface->frame_pending = false;
-
-	if (surface->dirty) {
-		// Schedule a frame in case the surface is damaged again
-		struct wl_callback *callback = wl_surface_frame(surface->surface);
-		wl_callback_add_listener(callback, &surface_frame_listener, surface);
-		surface->frame_pending = true;
-
-		if (surface->has_buffer) {
-			render_frame(surface);
-		}
-		surface->dirty = false;
-	}
-}
-
-static const struct wl_callback_listener surface_frame_listener = {
-	.done = surface_frame_handle_done,
-};
-
-void damage_surface(struct swaylock_surface *surface) {
-	if (!surface->created) {
-		return;
-	}
-	if (surface->width == 0 || surface->height == 0) {
-		// Not yet configured
-		return;
-	}
-
-	surface->dirty = true;
-	if (surface->frame_pending) {
-		return;
-	}
-
-	if (surface->has_buffer) {
-		struct wl_callback *callback = wl_surface_frame(surface->surface);
-		wl_callback_add_listener(callback, &surface_frame_listener, surface);
-		surface->frame_pending = true;
-		wl_surface_commit(surface->surface);
-	}
-}
-
 void damage_state(struct swaylock_state *state) {
 	struct swaylock_surface *surface;
 	wl_list_for_each(surface, &state->surfaces, link) {
-		damage_surface(surface);
+		surface->dirty = true;
+		render(surface);
 	}
 }
 
@@ -422,7 +375,8 @@ static void handle_wl_output_geometry(void *data, struct wl_output *wl_output,
 	surface->physical_height = height_mm;
 	surface->output_transform = transform;
 	if (surface->state->run_display) {
-		damage_surface(surface);
+		surface->dirty = true;
+		render(surface);
 	}
 }
 
@@ -453,7 +407,8 @@ static void handle_wl_output_scale(void *data, struct wl_output *output,
 	surface->scale = factor;
 
 	if (surface->state->run_display) {
-		damage_surface(surface);
+		surface->dirty = true;
+		render(surface);
 	}
 }
 
@@ -1841,7 +1796,8 @@ static void setup_clientless_mode(struct swaylock_state *state) {
 			}
 			render_fallback_surface(surface);
 		}
-		render_frame(surface);
+		surface->dirty = true;
+		render(surface);
 	}
 }
 

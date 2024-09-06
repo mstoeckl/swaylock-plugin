@@ -326,7 +326,7 @@ struct swaylock_surface {
 	uint32_t last_fractional_scale; /* is zero if nothing received yet */
 	struct pool_buffer indicator_buffers[2];
 	bool created;
-	bool frame_pending, dirty;
+	bool dirty;
 	uint32_t width, height;
 	int32_t scale;
 	enum wl_output_subpixel subpixel;
@@ -335,6 +335,7 @@ struct swaylock_surface {
 	int32_t physical_width, physical_height, output_transform;
 	int32_t mode_width, mode_height;
 	struct wl_list link;
+	struct wl_callback *frame;
 
 	struct wl_global *nested_server_output;
 	// lists of associated resources
@@ -407,9 +408,8 @@ struct swaylock_image {
 
 void swaylock_handle_key(struct swaylock_state *state,
 		xkb_keysym_t keysym, uint32_t codepoint);
-void render_frame_background(struct swaylock_surface *surface);
-void render_frame(struct swaylock_surface *surface);
-void damage_surface(struct swaylock_surface *surface);
+
+void render(struct swaylock_surface *surface);
 void damage_state(struct swaylock_state *state);
 void clear_password_buffer(struct swaylock_password *pw);
 void schedule_auth_idle(struct swaylock_state *state);

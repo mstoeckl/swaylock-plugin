@@ -33,6 +33,45 @@ static void set_color_for_state(cairo_t *cairo, struct swaylock_state *state,
 	}
 }
 
+static void surface_frame_handle_done(void *data, struct wl_callback *callback,
+		uint32_t time) {
+	struct swaylock_surface *surface = data;
+
+	wl_callback_destroy(callback);
+	surface->frame = NULL;
+
+	render(surface);
+}
+
+static const struct wl_callback_listener surface_frame_listener = {
+	.done = surface_frame_handle_done,
+};
+
+static bool render_frame(struct swaylock_surface *surface);
+
+void render(struct swaylock_surface *surface) {
+	int buffer_width = surface->width * surface->scale;
+	int buffer_height = surface->height * surface->scale;
+	if (buffer_width == 0 || buffer_height == 0) {
+		return; // not yet configured
+	}
+
+	if (!surface->has_buffer) {
+		return; // background not yet ready
+	}
+
+	if (!surface->dirty || surface->frame) {
+		// Nothing to do or frame already pending
+		return;
+	}
+
+	render_frame(surface);
+	surface->dirty = false;
+	surface->frame = wl_surface_frame(surface->surface);
+	wl_callback_add_listener(surface->frame, &surface_frame_listener, surface);
+	wl_surface_commit(surface->surface);
+}
+
 static void configure_font_drawing(cairo_t *cairo, struct swaylock_state *state,
 		enum wl_output_subpixel subpixel, int arc_radius) {
 	cairo_font_options_t *fo = cairo_font_options_create();
@@ -51,7 +90,7 @@ static void configure_font_drawing(cairo_t *cairo, struct swaylock_state *state,
 	cairo_font_options_destroy(fo);
 }
 
-void render_frame(struct swaylock_surface *surface) {
+static bool render_frame(struct swaylock_surface *surface) {
 	struct swaylock_state *state = surface->state;
 
 	// First, compute the text that will be drawn, if any, since this
@@ -162,7 +201,8 @@ void render_frame(struct swaylock_surface *surface) {
 	struct pool_buffer *buffer = get_next_buffer(state->shm,
 			surface->indicator_buffers, buffer_width, buffer_height);
 	if (buffer == NULL) {
-		return;
+		swaylock_log(LOG_ERROR, "No buffer");
+		return false;
 	}
 
 	// Render the buffer
@@ -304,5 +344,5 @@ void render_frame(struct swaylock_surface *surface) {
 	wl_surface_damage_buffer(surface->child, 0, 0, INT32_MAX, INT32_MAX);
 	wl_surface_commit(surface->child);
 
-	wl_surface_commit(surface->surface);
+	return true;
 }

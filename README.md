@@ -15,7 +15,11 @@ is replaced by your desired program. Examples:
    a few xscreensaver hacks to Wayland. Best with the `--command-each` flag.
 * [`windowtolayer`](https://gitlab.freedesktop.org/mstoeckl/windowtolayer), a tool that
    can be used to run normally windowed applications, like terminals, as wallpapers.
-   Requires `--command-each` flag.
+   Requires `--command-each` flag. For example:
+   ```
+   swaylock-plugin --command-each 'windowtolayer -- termite -e neo-matrix'
+   swaylock-plugin --command-each 'windowtolayer -- alacritty -e asciiquarium'
+   ```
 * You can rotate between wallpapers in a folder by setting the following script
   as the command; e.g.: `swaylock-plugin --command './example_rotate.sh /path/to/folder'`. (This works by periodically killing the wallpaper program, after which `swaylock-plugin` automatically restarts it.)
     ```

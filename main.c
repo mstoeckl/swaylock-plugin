@@ -1660,7 +1660,7 @@ void wlr_layer_shell_get_layer_surface(struct wl_client *client,
 	struct forward_surface *surf = wl_resource_get_user_data(surface);
 	struct swaylock_state *state = wl_resource_get_user_data(resource);
 
-	struct swaylock_surface *sw_surface;
+	struct swaylock_surface *sw_surface = NULL;
 	if ((state->server.main_client && client == state->server.main_client->client) || output) {
 		if (!output) {
 			swaylock_log(LOG_ERROR, "Main client tried to create a layer surface without specifying an output");

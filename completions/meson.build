@@ -6,7 +6,7 @@ datadir = get_option('datadir')
 if get_option('zsh-completions')
 	zsh_install_dir = datadir + '/zsh/site-functions'
 
-	install_data(['zsh/_swaylock'], rename: ['zsh/_swaylock-plugin'], install_dir: zsh_install_dir)
+	install_data(['zsh/_swaylock'], rename: ['_swaylock-plugin'], install_dir: zsh_install_dir)
 endif
 
 if get_option('bash-completions')
@@ -16,7 +16,7 @@ if get_option('bash-completions')
 		bash_install_dir = datadir + '/bash-completion/completions'
 	endif
 
-	install_data(['bash/swaylock'], rename: ['bash/swaylock-plugin'], install_dir: bash_install_dir)
+	install_data(['bash/swaylock'], rename: ['swaylock-plugin'], install_dir: bash_install_dir)
 endif
 
 if get_option('fish-completions')
@@ -26,5 +26,5 @@ if get_option('fish-completions')
 		fish_install_dir = datadir + '/fish/vendor_completions.d'
 	endif
 
-	install_data(['fish/swaylock.fish'], rename: ['fish/swaylock-plugin.fish'], install_dir: fish_install_dir)
+	install_data(['fish/swaylock.fish'], rename: ['swaylock-plugin.fish'], install_dir: fish_install_dir)
 endif

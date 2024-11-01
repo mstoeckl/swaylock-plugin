@@ -9,10 +9,45 @@
 
 static int comm[2][2] = {{-1, -1}, {-1, -1}};
 
+/* Read entire buffer, returning -1 on error, 0 on eof, nbytes on success */
+static ssize_t read_all(int fd, void *buf, size_t nbytes) {
+	ssize_t ret;
+	ssize_t nread = 0;
+	while ((size_t)nread < nbytes) {
+		ret = read(fd, buf + nread, nbytes - nread);
+		if (ret == -1 && errno == EINTR) {
+			continue;
+		} else if (ret == -1) {
+			return ret;
+		} else if (ret == 0) {
+			return 0;
+		} else {
+			nread += ret;
+		}
+	}
+	return nread;
+}
+
+/* Write entire buffer, returning -1 on error, nbytes on success */
+static ssize_t write_all(int fd, const void *buf, size_t nbytes) {
+	ssize_t ret;
+	ssize_t nwrite = 0;
+	while ((size_t)nwrite < nbytes) {
+		ret = write(fd, buf + nwrite, nbytes - nwrite);
+		if (ret == -1 && errno == EINTR) {
+			continue;
+		} else if (ret == -1) {
+			return ret;
+		} else {
+			nwrite += ret;
+		}
+	}
+	return nwrite;
+}
+
 ssize_t read_comm_request(char **buf_ptr) {
 	size_t size;
-	ssize_t amt;
-	amt = read(comm[0][0], &size, sizeof(size));
+	ssize_t amt = read_all(comm[0][0], &size, sizeof(size));
 	if (amt == 0) {
 		return 0;
 	} else if (amt < 0) {
@@ -24,22 +59,17 @@ ssize_t read_comm_request(char **buf_ptr) {
 	if (!buf) {
 		return -1;
 	}
-	size_t offs = 0;
-	do {
-		amt = read(comm[0][0], &buf[offs], size - offs);
-		if (amt <= 0) {
-			swaylock_log_errno(LOG_ERROR, "failed to read pw");
-			return -1;
-		}
-		offs += (size_t)amt;
-	} while (offs < size);
+	if (read_all(comm[0][0], buf, size) <= 0) {
+		swaylock_log_errno(LOG_ERROR, "failed to read pw");
+		return -1;
+	}
 
 	*buf_ptr = buf;
 	return size;
 }
 
 bool write_comm_reply(bool success) {
-	if (write(comm[1][1], &success, sizeof(success)) != sizeof(success)) {
+	if (write_all(comm[1][1], &success, sizeof(success)) < 0) {
 		swaylock_log_errno(LOG_ERROR, "failed to write pw check result");
 		return false;
 	}
@@ -73,20 +103,15 @@ bool write_comm_request(struct swaylock_password *pw) {
 	bool result = false;
 
 	size_t len = pw->len + 1;
-	size_t offs = 0;
-	if (write(comm[0][1], &len, sizeof(len)) < 0) {
+	if (write_all(comm[0][1], &len, sizeof(len)) < 0) {
 		swaylock_log_errno(LOG_ERROR, "Failed to request pw check");
 		goto out;
 	}
 
-	do {
-		ssize_t amt = write(comm[0][1], &pw->buffer[offs], len - offs);
-		if (amt < 0) {
-			swaylock_log_errno(LOG_ERROR, "Failed to write pw buffer");
-			goto out;
-		}
-		offs += amt;
-	} while (offs < len);
+	if (write_all(comm[0][1], pw->buffer, len) < 0) {
+		swaylock_log_errno(LOG_ERROR, "Failed to write pw buffer");
+		goto out;
+	}
 
 	result = true;
 
@@ -97,7 +122,7 @@ out:
 
 bool read_comm_reply(void) {
 	bool result = false;
-	if (read(comm[1][0], &result, sizeof(result)) != sizeof(result)) {
+	if (read_all(comm[1][0], &result, sizeof(result)) <= 0) {
 		swaylock_log_errno(LOG_ERROR, "Failed to read pw result");
 		result = false;
 	}

@@ -43,6 +43,45 @@ restart swaylock-plugin; or by switching to a different virtual terminal, runnin
 
 See the man page, [`swaylock-plugin(1)`](swaylock.1.scd), for instructions on using swaylock-plugin.
 
+## Grace period
+
+`swaylock-plugin` adds a grace period feature; unlike the original `swaylock`, it
+is not practical to emulate one using a separate program (like `chayang`) because
+any animated backgrounds would be interrupted. With the `--grace` flag, it is
+possible to unlock the screen without a password for the first few seconds after
+the screen locker starts with either a key press or significant mouse motion.
+
+This feature requires logind (systemd or elogind) support to automatically end the
+grace period just before the computer goes to sleep. The grace period also ends on
+receipt of the signal SIGUSR2.
+
+### Example
+
+Sway can be made to lock the screen with a grace period and the custom wallpaper
+program specified in the script `lock-bg-command.sh` with the following configuration:
+
+```
+exec swayidle \
+    timeout 300 'swaylock-plugin --grace 30sec --pointer-hysteresis 25.0 --command-each lock-bg-command.sh' \
+    timeout 600 'swaymsg "output * dpms off"' \
+       resume 'swaymsg "output * dpms on"' \
+       before-sleep 'swaylock-plugin --command-each lock-bg-command.sh'
+bindsym --locked Ctrl+Alt+L exec \
+    'killall -SIGUSR2 swaylock-plugin; \
+    swaylock-plugin --command-each lock-bg-command.sh'
+```
+
+This will, after 5 minutes of inactivity, start `swaylock-plugin`; for the next
+30 seconds, one can easily unlock the screen by pressing any key or moving the
+mouse more than 25 pixels in a one second period; afterwards, authentication
+will be required. When the computer goes to sleep, the screen will lock for
+certain. (If `swaylock-plugin` was running and in the grace period, the grace
+period will end; in case `swaylock-plugin` was not running, a new instance will
+be started without a grace period, that locks the screen if it was not already
+locked.) One can also immediately lock the screen with a keybinding (or use the
+keybinding to restart the lock screen, if it crashed.) Any screens will be turned
+off after 10 minutes of inactivity.
+
 ## Installation
 
 Install dependencies:
@@ -54,6 +93,7 @@ Install dependencies:
 * cairo
 * gdk-pixbuf2
 * pam (optional)
+* systemd or elogind (optional)
 * [scdoc](https://git.sr.ht/~sircmpwn/scdoc) (optional: man pages) \*
 * git \*
 * swaybg

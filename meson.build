@@ -40,6 +40,7 @@ libpam = cc.find_library('pam', required: get_option('pam'))
 crypt = cc.find_library('crypt', required: not libpam.found())
 math = cc.find_library('m')
 rt = cc.find_library('rt')
+logind = dependency('lib' + get_option('logind-provider'), required: get_option('logind'))
 
 git = find_program('git', required: false)
 scdoc = find_program('scdoc', required: get_option('man-pages'))
@@ -110,6 +111,11 @@ conf_data = configuration_data()
 conf_data.set_quoted('SYSCONFDIR', get_option('prefix') / get_option('sysconfdir'))
 conf_data.set_quoted('SWAYLOCK_VERSION', version)
 conf_data.set10('HAVE_GDK_PIXBUF', gdk_pixbuf.found())
+conf_data.set10('HAVE_SYSTEMD', false)
+conf_data.set10('HAVE_ELOGIND', false)
+if logind.found()
+	conf_data.set10('HAVE_' + get_option('logind-provider').to_upper(), true)
+endif
 
 subdir('include')
 
@@ -156,6 +162,13 @@ executable('swaylock-plugin',
 	sources + protos_src,
 	include_directories: [swaylock_inc],
 	dependencies: dependencies,
+	install: true
+)
+
+executable('swaylock-sleep-watcher',
+	['sleep-watcher.c', 'log.c'],
+	include_directories: [swaylock_inc],
+	dependencies: [logind],
 	install: true
 )
 

@@ -65,6 +65,12 @@ static void keyboard_key(void *data, struct wl_keyboard *wl_keyboard,
 		key + 8 : 0;
 	uint32_t codepoint = xkb_state_key_get_utf32(state->xkb.state, keycode);
 	if (key_state == WL_KEYBOARD_KEY_STATE_PRESSED) {
+		if (state->grace_timer) {
+			/* still in grace period, immediately unlock */
+			swaylock_log(LOG_DEBUG, "Key press during grace period, unlocking");
+			state->run_display = false;
+			return;
+		}
 		swaylock_handle_key(state, sym, codepoint);
 	}
 
@@ -132,7 +138,20 @@ static const struct wl_keyboard_listener keyboard_listener = {
 static void wl_pointer_enter(void *data, struct wl_pointer *wl_pointer,
 		uint32_t serial, struct wl_surface *surface,
 		wl_fixed_t surface_x, wl_fixed_t surface_y) {
+	struct swaylock_seat *seat = data;
 	wl_pointer_set_cursor(wl_pointer, serial, NULL, 0, 0);
+	if (!seat->state->grace_timer) {
+		return;
+	}
+	struct timespec current_time;
+	if (clock_gettime(CLOCK_BOOTTIME, &current_time) == -1 && errno == EINVAL) {
+		clock_gettime(CLOCK_MONOTONIC, &current_time);
+	}
+	seat->last_interval = current_time.tv_sec;
+	seat->interval_start_x = surface_x;
+	seat->interval_start_y = surface_y;
+	seat->last_mouse_x = surface_x;
+	seat->last_mouse_y = surface_y;
 }
 
 static void wl_pointer_leave(void *data, struct wl_pointer *wl_pointer,
@@ -142,12 +161,42 @@ static void wl_pointer_leave(void *data, struct wl_pointer *wl_pointer,
 
 static void wl_pointer_motion(void *data, struct wl_pointer *wl_pointer,
 		uint32_t time, wl_fixed_t surface_x, wl_fixed_t surface_y) {
-	// Who cares
+	struct swaylock_seat *seat = data;
+	if (!seat->state->grace_timer) {
+		return;
+	}
+	struct timespec current_time;
+	if (clock_gettime(CLOCK_BOOTTIME, &current_time) == -1 && errno == EINVAL) {
+		clock_gettime(CLOCK_MONOTONIC, &current_time);
+	}
+	int64_t intv = current_time.tv_sec;
+	if (intv != seat->last_interval) {
+		seat->last_interval = intv;
+		seat->interval_start_x = seat->last_mouse_x;
+		seat->interval_start_y = seat->last_mouse_y;
+	}
+	float dx = wl_fixed_to_double(surface_x - seat->interval_start_x);
+	float dy = wl_fixed_to_double(surface_y - seat->interval_start_y);
+	float thresh = seat->state->args.grace_pointer_hysteresis;
+	if (dx * dx + dy * dy >= thresh * thresh) {
+		/* Mouse moved more than hysteresis value in a one-second time period;
+		 * this is probably a deliberate action and not noise or a minor tremor */
+		swaylock_log(LOG_DEBUG, "Significant mouse motion (%f logical px) during grace period, unlocking",
+			sqrtf(dx * dx + dy * dy));
+		seat->state->run_display = false;
+	}
+	seat->last_mouse_x = surface_x;
+	seat->last_mouse_y = surface_y;
 }
 
 static void wl_pointer_button(void *data, struct wl_pointer *wl_pointer,
 		uint32_t serial, uint32_t time, uint32_t button, uint32_t state) {
-	// Who cares
+	struct swaylock_seat *seat = data;
+	if (seat->state->grace_timer) {
+		/* unlock during grace period on click */
+		swaylock_log(LOG_DEBUG, "Mouse button action during grace period, unlocking");
+		seat->state->run_display = false;
+	}
 }
 
 static void wl_pointer_axis(void *data, struct wl_pointer *wl_pointer,
@@ -174,6 +223,16 @@ static void wl_pointer_axis_discrete(void *data, struct wl_pointer *wl_pointer,
 	// Who cares
 }
 
+static void wl_pointer_axis_value120(void *data, struct wl_pointer *wl_pointer,
+		uint32_t axis, int32_t value120) {
+	// Who cares
+}
+
+static void wl_pointer_axis_relative_direction(void *data, struct wl_pointer *wl_pointer,
+		uint32_t axis, uint32_t direction) {
+	// Who cares
+}
+
 static const struct wl_pointer_listener pointer_listener = {
 	.enter = wl_pointer_enter,
 	.leave = wl_pointer_leave,
@@ -184,6 +243,8 @@ static const struct wl_pointer_listener pointer_listener = {
 	.axis_source = wl_pointer_axis_source,
 	.axis_stop = wl_pointer_axis_stop,
 	.axis_discrete = wl_pointer_axis_discrete,
+	.axis_value120 = wl_pointer_axis_value120,
+	.axis_relative_direction = wl_pointer_axis_relative_direction,
 };
 
 static void seat_handle_capabilities(void *data, struct wl_seat *wl_seat,
@@ -199,7 +260,7 @@ static void seat_handle_capabilities(void *data, struct wl_seat *wl_seat,
 	}
 	if ((caps & WL_SEAT_CAPABILITY_POINTER)) {
 		seat->pointer = wl_seat_get_pointer(wl_seat);
-		wl_pointer_add_listener(seat->pointer, &pointer_listener, NULL);
+		wl_pointer_add_listener(seat->pointer, &pointer_listener, seat);
 	}
 	if ((caps & WL_SEAT_CAPABILITY_KEYBOARD)) {
 		seat->keyboard = wl_seat_get_keyboard(wl_seat);

@@ -76,6 +76,10 @@ struct swaylock_args {
 	bool indicator_idle_visible;
 	char *plugin_command;
 	bool plugin_per_output;
+	/* negative values = no grace; unit: seconds */
+	float grace_time;
+	/* max number of pixels/sec mouse motion which will be ignored */
+	float grace_pointer_hysteresis;
 };
 
 struct swaylock_password {
@@ -303,6 +307,8 @@ struct swaylock_state {
 	struct forward_state forward;
 	struct swaylock_bg_server server;
 	bool start_clientless_mode;
+	struct loop_timer *grace_timer; // timer for grace period to end
+	int sleep_comm_r, sleep_comm_w;
 
 	// for nested server, output was destroyed
 	struct wl_list stale_wl_output_resources;

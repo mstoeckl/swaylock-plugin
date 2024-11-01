@@ -674,9 +674,14 @@ static const struct wl_registry_listener registry_listener = {
 };
 
 static int sigusr_fds[2] = {-1, -1};
+static int sigusr2_fds[2] = {-1, -1};
 
 void do_sigusr(int sig) {
 	(void)write(sigusr_fds[1], "1", 1);
+}
+
+void do_sigusr2(int sig) {
+	(void)write(sigusr2_fds[1], "1", 1);
 }
 
 static cairo_surface_t *select_image(struct swaylock_state *state,
@@ -854,6 +859,8 @@ static int parse_options(int argc, char **argv, struct swaylock_state *state,
 		LO_TEXT_CAPS_LOCK_COLOR,
 		LO_TEXT_VER_COLOR,
 		LO_TEXT_WRONG_COLOR,
+		LO_PLUGIN_GRACE,
+		LO_PLUGIN_POINTER_HYSTERESIS,
 		LO_PLUGIN_COMMAND,
 		LO_PLUGIN_COMMAND_EACH,
 	};
@@ -913,6 +920,8 @@ static int parse_options(int argc, char **argv, struct swaylock_state *state,
 		{"text-caps-lock-color", required_argument, NULL, LO_TEXT_CAPS_LOCK_COLOR},
 		{"text-ver-color", required_argument, NULL, LO_TEXT_VER_COLOR},
 		{"text-wrong-color", required_argument, NULL, LO_TEXT_WRONG_COLOR},
+		{"grace", required_argument, NULL, LO_PLUGIN_GRACE},
+		{"pointer-hysteresis", required_argument, NULL, LO_PLUGIN_POINTER_HYSTERESIS},
 		{"command", required_argument, NULL, LO_PLUGIN_COMMAND},
 		{"command-each", required_argument, NULL, LO_PLUGIN_COMMAND_EACH},
 		{0, 0, 0, 0}
@@ -1037,6 +1046,10 @@ static int parse_options(int argc, char **argv, struct swaylock_state *state,
 			"Sets the color of the text when verifying.\n"
 		"  --text-wrong-color <color>       "
 			"Sets the color of the text when invalid.\n"
+		"  --grace <seconds>                "
+			"Allow unlocking without a password before <seconds> elapse\n"
+		"  --pointer-hysteresis <distance>  "
+			"If --grace used, minimum mouse motion needed to auto-unlock\n"
 		"  --command <cmd>                  "
 			"Indicates which program to run to draw backgrounds.\n"
 		"  --command-each <cmd>             "
@@ -1320,6 +1333,38 @@ static int parse_options(int argc, char **argv, struct swaylock_state *state,
 		case LO_TEXT_WRONG_COLOR:
 			if (state) {
 				state->args.colors.text.wrong = parse_color(optarg);
+			}
+			break;
+		case LO_PLUGIN_GRACE:
+			if (state) {
+				char *end = NULL;
+				float value = strtof(optarg, &end);
+				float unit = 1.0;
+				if (*end == 0 || strcmp(end, "s") == 0 || strcmp(end, "sec") == 0) {
+					unit = 1.0;
+				} else if (strcmp(end, "m") == 0 || strcmp(end, "min") == 0) {
+					unit = 60.0;
+				} else if (strcmp(end, "h") == 0 || strcmp(end, "hr") == 0) {
+					unit = 3600.0;
+				} else {
+					swaylock_log(LOG_ERROR,
+						"'%s' is not a valid grace time specification. Valid examples: 11.5, 100s, 30min, 2hr",
+						optarg);
+					break;
+				}
+				state->args.grace_time = value * unit;
+			}
+			break;
+		case LO_PLUGIN_POINTER_HYSTERESIS:
+			if (state) {
+				char *end = NULL;
+				float value = strtof(optarg, &end);
+				if (*end == '\0') {
+					state->args.grace_pointer_hysteresis = value;
+				} else {
+					swaylock_log(LOG_ERROR,
+						"Invalid value for pointer hysteresis: '%s' is not a real number", optarg);
+				}
 			}
 			break;
 		case LO_PLUGIN_COMMAND:
@@ -1852,6 +1897,19 @@ static void output_redraw_timeout(void *data) {
 	client_timeout(surface->client ? surface->client : surface->state->server.main_client);
 }
 
+static void grace_timeout(void *data) {
+	struct swaylock_state *state = data;
+	// The event loop frees the timer object; setting grace_timer to null marks
+	// the grace period as over
+	swaylock_log(LOG_DEBUG, "Grace period ended");
+	state->grace_timer = NULL;
+	loop_remove_fd(state->eventloop, state->sleep_comm_r);
+	close(state->sleep_comm_r);
+	close(state->sleep_comm_w);
+	state->sleep_comm_r = -1;
+	state->sleep_comm_w = -1;
+}
+
 uint32_t posix_spawn_setsid_flag(void);
 static bool spawn_command(struct swaylock_state *state, int sock_child,
 		int sock_local, const char *output_name, const char *output_desc) {
@@ -2103,6 +2161,71 @@ static void term_in(int fd, short mask, void *data) {
 	state.run_display = false;
 }
 
+static void lock_in(int fd, short mask, void *data) {
+	/* On receipt of SIGUSR2, end the grace period */
+	if (state.grace_timer) {
+		/* Timer will automatically be freed later */
+		swaylock_log(LOG_DEBUG, "Received SIGUSR2, ending unlock grace period");
+		loop_remove_timer(state.eventloop, state.grace_timer);
+		state.grace_timer = NULL;
+		loop_remove_fd(state.eventloop, state.sleep_comm_r);
+		close(state.sleep_comm_r);
+		close(state.sleep_comm_w);
+		state.sleep_comm_r = -1;
+		state.sleep_comm_w = -1;
+	}
+}
+
+static void sleep_in(int fd, short mask, void *data) {
+	struct swaylock_state *state = data;
+	if (state->grace_timer) {
+		swaylock_log(LOG_DEBUG, "Received sleep notification, ending unlock grace period");
+		loop_remove_timer(state->eventloop, state->grace_timer);
+		state->grace_timer = NULL;
+		close(state->sleep_comm_r);
+		close(state->sleep_comm_w);
+		state->sleep_comm_r = -1;
+		state->sleep_comm_w = -1;
+	}
+	loop_remove_fd(state->eventloop, state->sleep_comm_r);
+}
+
+static int start_sleep_watcher(int *sleep_comm_r, int* sleep_comm_w) {
+	int comm_r[2], comm_w[2];
+	if (pipe(comm_r) != 0 || pipe(comm_w) != 0) {
+		swaylock_log(LOG_ERROR, "Failed to create communication pipes");
+		return -1;
+	}
+
+	if (!set_cloexec(comm_r[0]) || !set_cloexec(comm_w[1])) {
+		swaylock_log(LOG_ERROR, "Failed to make pipes close-on-exec");
+		close(comm_r[0]);
+		close(comm_r[1]);
+		close(comm_w[0]);
+		close(comm_w[1]);
+		return -1;
+	}
+
+	pid_t pid;
+	char proc_r_str[20], proc_w_str[20];
+	snprintf(proc_r_str, sizeof(proc_r_str), "%d", comm_w[0]);
+	snprintf(proc_w_str, sizeof(proc_w_str), "%d", comm_r[1]);
+	char *args[] = {"swaylock-sleep-watcher", proc_w_str, proc_r_str, NULL};
+	if (posix_spawnp(&pid, "swaylock-sleep-watcher", NULL, NULL, args, environ) == -1) {
+		close(comm_r[0]);
+		close(comm_r[1]);
+		close(comm_w[0]);
+		close(comm_w[1]);
+		swaylock_log(LOG_ERROR, "Failed to run sleep detection helper");
+		return -1;
+	}
+	close(comm_r[1]);
+	close(comm_w[0]);
+	*sleep_comm_r = comm_r[0];
+	*sleep_comm_w = comm_w[1];
+	return 0;
+}
+
 // Check for --debug 'early' we also apply the correct loglevel
 // to the forked child, without having to first proces all of the
 // configuration (including from file) before forking and (in the
@@ -2130,6 +2253,15 @@ void log_init(int argc, char **argv) {
 }
 
 int main(int argc, char **argv) {
+	/* Initially ignore SIGUSR1 + SIGUSR2 to prevent stray signals (like
+	 * `killall -SIGUSR2`) from affecting the pw backend subprocess */
+	struct sigaction sa;
+	sa.sa_handler = SIG_IGN;
+	sigemptyset(&sa.sa_mask);
+	sa.sa_flags = 0;
+	sigaction(SIGUSR1, &sa, NULL);
+	sigaction(SIGUSR2, &sa, NULL);
+
 	log_init(argc, argv);
 	initialize_pw_backend(argc, argv);
 	srand(time(NULL));
@@ -2156,6 +2288,8 @@ int main(int argc, char **argv) {
 		.indicator_idle_visible = false,
 		.ready_fd = -1,
 		.plugin_command = NULL,
+		.grace_time = 0.0f,
+		.grace_pointer_hysteresis = 10.0f,
 	};
 	wl_list_init(&state.images);
 	set_default_colors(&state.args.colors);
@@ -2211,6 +2345,18 @@ int main(int argc, char **argv) {
 		return EXIT_FAILURE;
 	}
 	if (fcntl(sigusr_fds[1], F_SETFL, O_NONBLOCK) == -1) {
+		swaylock_log(LOG_ERROR, "Failed to make pipe end nonblocking");
+		return EXIT_FAILURE;
+	}
+	if (pipe(sigusr2_fds) != 0) {
+		swaylock_log(LOG_ERROR, "Failed to pipe");
+		return EXIT_FAILURE;
+	}
+	if (!set_cloexec(sigusr2_fds[0]) || !set_cloexec(sigusr2_fds[1])) {
+		swaylock_log(LOG_ERROR, "Failed to make pipes close-on-exec");
+		return EXIT_FAILURE;
+	}
+	if (fcntl(sigusr2_fds[1], F_SETFL, O_NONBLOCK) == -1) {
 		swaylock_log(LOG_ERROR, "Failed to make pipe end nonblocking");
 		return EXIT_FAILURE;
 	}
@@ -2340,6 +2486,19 @@ int main(int argc, char **argv) {
 		daemonize();
 	}
 
+	state.sleep_comm_r = -1;
+	state.sleep_comm_w = -1;
+	if (state.args.grace_time > 0.) {
+		float delay_ms = ceilf(state.args.grace_time * 1000.f);
+		int delay = delay_ms >= (float)INT_MAX ? INT_MAX : (int)delay_ms;
+
+		/* Failure of this process just cancels the grace period */
+		if (start_sleep_watcher(&state.sleep_comm_r, &state.sleep_comm_w) == 0) {
+			state.grace_timer = loop_add_timer(state.eventloop, delay, grace_timeout, &state);
+			loop_add_fd(state.eventloop, state.sleep_comm_r, POLLIN, sleep_in, &state);
+		}
+	}
+
 	/* fill in dmabuf modifier list if empty and upstream provided dmabuf-feedback */
 	if (state.forward.linux_dmabuf && zwp_linux_dmabuf_v1_get_version(state.forward.linux_dmabuf) >= 4) {
 		size_t npairs = 0;
@@ -2420,12 +2579,17 @@ int main(int argc, char **argv) {
 		POLLIN, dispatch_nested, NULL);
 
 	loop_add_fd(state.eventloop, sigusr_fds[0], POLLIN, term_in, NULL);
+	loop_add_fd(state.eventloop, sigusr2_fds[0], POLLIN, lock_in, NULL);
 
-	struct sigaction sa;
 	sa.sa_handler = do_sigusr;
 	sigemptyset(&sa.sa_mask);
 	sa.sa_flags = SA_RESTART;
 	sigaction(SIGUSR1, &sa, NULL);
+
+	sa.sa_handler = do_sigusr2;
+	sigemptyset(&sa.sa_mask);
+	sa.sa_flags = SA_RESTART;
+	sigaction(SIGUSR2, &sa, NULL);
 
 	// Ignore SIGCHLD, to make child processes be automatically reaped.
 	// (This setting is not inherited to child processes.)

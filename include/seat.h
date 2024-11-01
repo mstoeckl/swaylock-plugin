@@ -3,6 +3,8 @@
 #include <xkbcommon/xkbcommon.h>
 #include <stdint.h>
 #include <stdbool.h>
+#include <wayland-util.h>
+#include <time.h>
 
 struct loop;
 struct loop_timer;
@@ -24,6 +26,10 @@ struct swaylock_seat {
 	uint32_t repeat_sym;
 	uint32_t repeat_codepoint;
 	struct loop_timer *repeat_timer;
+	/* mouse tracking to check for deliberate mouse motion */
+	int64_t last_interval;
+	wl_fixed_t interval_start_x, interval_start_y;
+	wl_fixed_t last_mouse_x, last_mouse_y;
 };
 
 extern const struct wl_seat_listener seat_listener;

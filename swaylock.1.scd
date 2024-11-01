@@ -50,6 +50,17 @@ Locks your Wayland session.
 
 	Note: this is the default behavior of i3lock.
 
+*--grace* <time>
+	Set the duration after program start in which one can unlock the screen
+	with just a keypress or by moving the mouse far enough (configurable with
+	*--pointer-hysteresis*). The "grace period" automatically ends when the
+	system is about to sleep or when the signal SIGUSR2 is received.
+
+*--pointer-hysteresis* <distance>
+	Specifies the minimum distance the mouse must move in a one-second period
+	to unlock the screen during the grace period. Units are in logical pixels,
+	and setting *--pointer-hysteresis inf* prevents unlocking by mouse entirely.
+
 *-R, --ready-fd* <fd>
 	File descriptor to send readiness notifications to.
 
@@ -215,6 +226,10 @@ Locks your Wayland session.
 
 *SIGUSR1*
 	Unlock the screen and exit.
+
+*SIGUSR2*
+	If a grace period is used, end it immediately and require authentication
+	to unlock.
 
 # AUTHORS
 

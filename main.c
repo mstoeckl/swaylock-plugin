@@ -1433,6 +1433,9 @@ static void comm_in(int fd, short mask, void *data) {
 	if (read_comm_reply()) {
 		// Authentication succeeded
 		state.run_display = false;
+	} else if (mask & (POLLHUP | POLLERR)) {
+		swaylock_log(LOG_ERROR,	"Password checking subprocess crashed; exiting.");
+		exit(EXIT_FAILURE);
 	} else {
 		state.auth_state = AUTH_STATE_INVALID;
 		schedule_auth_idle(&state);

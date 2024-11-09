@@ -1730,8 +1730,14 @@ void wlr_layer_shell_get_layer_surface(struct wl_client *client,
 	// todo: when plugin surface commits, proceed?
 }
 
+static void wlr_layer_shell_destroy(struct wl_client *client,
+		struct wl_resource *resource) {
+	wl_resource_destroy(resource);
+}
+
 static const struct zwlr_layer_shell_v1_interface zwlr_layer_shell_v1_impl = {
 	.get_layer_surface = wlr_layer_shell_get_layer_surface,
+	.destroy = wlr_layer_shell_destroy,
 };
 
 static void bind_wlr_layer_shell(struct wl_client *client, void *data, uint32_t version, uint32_t id) {

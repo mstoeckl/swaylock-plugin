@@ -819,16 +819,13 @@ void send_dmabuf_feedback_data(struct wl_resource *feedback, const struct dmabuf
 	}
 	zwp_linux_dmabuf_feedback_v1_send_format_table(feedback, state->table_fd, state->table_fd_size);
 	for (size_t i = 0; i < state->tranches_len; i++) {
-		zwp_linux_dmabuf_feedback_v1_send_tranche_formats(feedback, &state->tranches[i].indices);
-		dev_t alt = {0};
-		if (memcmp(&state->tranches[i].tranche_device, &alt, sizeof(dev_t))) {
-			struct wl_array tranche_device;
-			tranche_device.data = (void*)&state->tranches[i].tranche_device;
-			tranche_device.alloc = 0;
-			tranche_device.size = sizeof(dev_t);
-			zwp_linux_dmabuf_feedback_v1_send_tranche_target_device(feedback, &tranche_device);
-		}
+		struct wl_array tranche_device;
+		tranche_device.data = (void*)&state->tranches[i].tranche_device;
+		tranche_device.alloc = 0;
+		tranche_device.size = sizeof(dev_t);
+		zwp_linux_dmabuf_feedback_v1_send_tranche_target_device(feedback, &tranche_device);
 		zwp_linux_dmabuf_feedback_v1_send_tranche_flags(feedback, state->tranches[i].flags);
+		zwp_linux_dmabuf_feedback_v1_send_tranche_formats(feedback, &state->tranches[i].indices);
 		zwp_linux_dmabuf_feedback_v1_send_tranche_done(feedback);
 	}
 	zwp_linux_dmabuf_feedback_v1_send_done(feedback);

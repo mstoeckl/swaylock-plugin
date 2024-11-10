@@ -25,6 +25,13 @@ static const struct zwp_linux_dmabuf_feedback_v1_interface linux_dmabuf_feedback
 static const struct wp_viewport_interface viewport_impl;
 static const struct wp_fractional_scale_v1_interface fractional_scale_impl;
 
+struct forward_params {
+	struct zwp_linux_buffer_params_v1* params;
+	struct wl_resource *resource;
+	int32_t width;
+	int32_t height;
+};
+
 static bool does_transform_transpose_size(int32_t transform) {
 	switch (transform) {
 	default:
@@ -49,9 +56,12 @@ static void nested_surface_destroy(struct wl_client *client,
 static void nested_surface_attach(struct wl_client *client,
 		struct wl_resource *resource, struct wl_resource *buffer, int32_t x, int32_t y) {
 	assert(wl_resource_instance_of(resource, &wl_surface_interface, &surface_impl));
-	assert(wl_resource_instance_of(buffer, &wl_buffer_interface, &buffer_impl));
 	struct forward_surface *surface = wl_resource_get_user_data(resource);
-	struct forward_buffer *f_buffer = wl_resource_get_user_data(buffer);
+	struct forward_buffer *f_buffer = NULL;
+	if (buffer) {
+		assert(wl_resource_instance_of(buffer, &wl_buffer_interface, &buffer_impl));
+		f_buffer = wl_resource_get_user_data(buffer);
+	}
 
 	if (surface->pending.attachment == f_buffer) {
 		/* no change */
@@ -719,17 +729,33 @@ static void nested_dmabuf_params_add(struct wl_client *client,
 		struct wl_resource *resource, int32_t fd, uint32_t plane_idx,
 		uint32_t offset, uint32_t stride, uint32_t modifier_hi, uint32_t modifier_lo) {
 	assert(wl_resource_instance_of(resource, &zwp_linux_buffer_params_v1_interface, &linux_dmabuf_params_impl));
-	struct zwp_linux_buffer_params_v1* params = wl_resource_get_user_data(resource);
-	zwp_linux_buffer_params_v1_add(params, fd, plane_idx, offset, stride, modifier_hi, modifier_lo);
+	struct forward_params* params = wl_resource_get_user_data(resource);
+	zwp_linux_buffer_params_v1_add(params->params, fd, plane_idx, offset, stride, modifier_hi, modifier_lo);
 }
 static void nested_dmabuf_params_create(struct wl_client *client,
 		struct wl_resource *resource, int32_t width, int32_t height,
 		uint32_t format, uint32_t flags) {
-	wl_client_post_implementation_error(client, "TODO IMPLEMENT CREATE");
+	assert(wl_resource_instance_of(resource, &zwp_linux_buffer_params_v1_interface, &linux_dmabuf_params_impl));
+	struct forward_params *params = wl_resource_get_user_data(resource);
+	params->width = width;
+	params->height = height;
+	zwp_linux_buffer_params_v1_create(params->params, width, height, format, flags);
+}
+static struct forward_buffer *make_buffer(int width, int height) {
+	struct forward_buffer *buffer = calloc(1, sizeof(struct forward_buffer));
+	if (!buffer) {
+		return NULL;
+	}
+	wl_list_init(&buffer->pending_surfaces);
+	wl_list_init(&buffer->committed_surfaces);
+	buffer->width = width;
+	buffer->height = height;
+	return buffer;
 }
 static void nested_dmabuf_params_create_immed(struct wl_client *client,
 		struct wl_resource *resource, uint32_t buffer_id, int32_t width,
 		int32_t height, uint32_t format, uint32_t flags) {
+	assert(wl_resource_instance_of(resource, &zwp_linux_buffer_params_v1_interface, &linux_dmabuf_params_impl));
 	struct wl_resource *buffer_resource = wl_resource_create(client, &wl_buffer_interface,
 		wl_resource_get_version(resource), buffer_id);
 	if (buffer_resource == NULL) {
@@ -737,20 +763,15 @@ static void nested_dmabuf_params_create_immed(struct wl_client *client,
 		return;
 	}
 
-	struct zwp_linux_buffer_params_v1 *params = wl_resource_get_user_data(resource);
+	struct forward_params *params = wl_resource_get_user_data(resource);
 
-	struct forward_buffer *buffer = calloc(1, sizeof(struct forward_buffer));
+	struct forward_buffer *buffer = make_buffer(width, height);
 	if (!buffer) {
 		wl_client_post_no_memory(client);
 		return;
 	}
 	buffer->resource = buffer_resource;
-	wl_list_init(&buffer->pending_surfaces);
-	wl_list_init(&buffer->committed_surfaces);
-	buffer->width = width;
-	buffer->height = height;
-
-	buffer->buffer = zwp_linux_buffer_params_v1_create_immed(params, width, height, format, flags);
+	buffer->buffer = zwp_linux_buffer_params_v1_create_immed(params->params, width, height, format, flags);
 	if (!buffer->buffer) {
 		wl_client_post_no_memory(client);
 		return;
@@ -772,25 +793,77 @@ static const struct zwp_linux_buffer_params_v1_interface linux_dmabuf_params_imp
 
 static void linux_dmabuf_params_handle_resource_destroy(struct wl_resource *resource) {
 	assert(wl_resource_instance_of(resource, &zwp_linux_buffer_params_v1_interface, &linux_dmabuf_params_impl));
-	struct zwp_linux_buffer_params_v1* params = wl_resource_get_user_data(resource);
-	zwp_linux_buffer_params_v1_destroy(params);
+	struct forward_params* params = wl_resource_get_user_data(resource);
+	zwp_linux_buffer_params_v1_destroy(params->params);
+	free(params);
 }
 
 static void nested_linux_dmabuf_destroy(struct wl_client *client,
 		struct wl_resource *resource){
 	wl_resource_destroy(resource);
 }
-static void nested_linux_dmabuf_create_params(struct wl_client *client,
-		struct wl_resource *resource, uint32_t params_id) {
-	struct wl_resource *params_resource = wl_resource_create(client, &zwp_linux_buffer_params_v1_interface,
-		wl_resource_get_version(resource), params_id);
-	if (params_resource == NULL) {
+
+void handle_dmabuf_params_created(void *data,
+		struct zwp_linux_buffer_params_v1 *zwp_linux_buffer_params_v1,
+		struct wl_buffer *wl_buffer) {
+	struct forward_params *params = data;
+
+	struct wl_client *client = wl_resource_get_client(params->resource);
+	struct wl_resource *buffer_resource = wl_resource_create(client, &wl_buffer_interface,
+		wl_resource_get_version(params->resource), 0);
+	if (buffer_resource == NULL) {
 		wl_client_post_no_memory(client);
 		return;
 	}
-	struct forward_state *forward = wl_resource_get_user_data(resource);
-	struct zwp_linux_buffer_params_v1 *params = zwp_linux_dmabuf_v1_create_params(forward->linux_dmabuf);
 
+	struct forward_buffer *buffer = make_buffer(params->width, params->height);
+	if (!buffer) {
+		wl_client_post_no_memory(client);
+		return;
+	}
+	buffer->resource = buffer_resource;
+	buffer->buffer = wl_buffer;
+	wl_resource_set_implementation(buffer_resource, &buffer_impl,
+		buffer, buffer_handle_resource_destroy);
+	wl_buffer_add_listener(buffer->buffer, &buffer_listener, buffer);
+	zwp_linux_buffer_params_v1_send_created(params->resource, buffer_resource);
+}
+
+static void handle_dmabuf_params_failed(void *data,
+		struct zwp_linux_buffer_params_v1 *zwp_linux_buffer_params_v1)  {
+	struct forward_params *params = data;
+	zwp_linux_buffer_params_v1_send_failed(params->resource);
+}
+
+static const struct zwp_linux_buffer_params_v1_listener params_listener = {
+	.created = handle_dmabuf_params_created,
+	.failed = handle_dmabuf_params_failed,
+};
+
+static void nested_linux_dmabuf_create_params(struct wl_client *client,
+		struct wl_resource *resource, uint32_t params_id) {
+	struct forward_params *params = calloc(1, sizeof(*params));
+	if (!params) {
+		wl_client_post_no_memory(client);
+		return;
+	}
+
+	struct wl_resource *params_resource = wl_resource_create(client,
+		&zwp_linux_buffer_params_v1_interface,
+		wl_resource_get_version(resource), params_id);
+	if (params_resource == NULL) {
+		free(params);
+		wl_client_post_no_memory(client);
+		return;
+	}
+
+	struct forward_state *forward = wl_resource_get_user_data(resource);
+	params->resource = params_resource;
+	params->params = zwp_linux_dmabuf_v1_create_params(forward->linux_dmabuf);
+	params->width = 0;
+	params->height = 0;
+	zwp_linux_buffer_params_v1_add_listener(params->params, &params_listener,
+		params);
 	wl_resource_set_implementation(params_resource, &linux_dmabuf_params_impl,
 		params, linux_dmabuf_params_handle_resource_destroy);
 }

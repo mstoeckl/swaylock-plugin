@@ -162,8 +162,9 @@ static void nested_surface_commit(struct wl_client *client,
 	}
 
 	if (!surface->sway_surface) {
-		/* todo: is a role required? if not, should only ignore in this case */
-		wl_client_post_implementation_error(client, "tried to commit a surface without a role");
+		/* Clients can create and commit to any number of wl_surfaces; however,
+		 * these have no impact until the surface is given a role. Ignore these
+		 * commits. */
 		return;
 	}
 

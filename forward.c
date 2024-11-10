@@ -731,6 +731,7 @@ static void nested_dmabuf_params_add(struct wl_client *client,
 	assert(wl_resource_instance_of(resource, &zwp_linux_buffer_params_v1_interface, &linux_dmabuf_params_impl));
 	struct forward_params* params = wl_resource_get_user_data(resource);
 	zwp_linux_buffer_params_v1_add(params->params, fd, plane_idx, offset, stride, modifier_hi, modifier_lo);
+	close(fd);
 }
 static void nested_dmabuf_params_create(struct wl_client *client,
 		struct wl_resource *resource, int32_t width, int32_t height,

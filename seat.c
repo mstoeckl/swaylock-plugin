@@ -1,6 +1,7 @@
 #include <assert.h>
 #include <stdlib.h>
 #include <sys/mman.h>
+#include <time.h>
 #include <unistd.h>
 #include <xkbcommon/xkbcommon.h>
 #include "log.h"
@@ -144,9 +145,7 @@ static void wl_pointer_enter(void *data, struct wl_pointer *wl_pointer,
 		return;
 	}
 	struct timespec current_time;
-	if (clock_gettime(CLOCK_BOOTTIME, &current_time) == -1 && errno == EINVAL) {
-		clock_gettime(CLOCK_MONOTONIC, &current_time);
-	}
+	clock_gettime(CLOCK_MONOTONIC, &current_time);
 	seat->last_interval = current_time.tv_sec;
 	seat->interval_start_x = surface_x;
 	seat->interval_start_y = surface_y;
@@ -166,9 +165,7 @@ static void wl_pointer_motion(void *data, struct wl_pointer *wl_pointer,
 		return;
 	}
 	struct timespec current_time;
-	if (clock_gettime(CLOCK_BOOTTIME, &current_time) == -1 && errno == EINVAL) {
-		clock_gettime(CLOCK_MONOTONIC, &current_time);
-	}
+	clock_gettime(CLOCK_MONOTONIC, &current_time);
 	int64_t intv = current_time.tv_sec;
 	if (intv != seat->last_interval) {
 		seat->last_interval = intv;

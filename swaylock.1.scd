@@ -54,7 +54,8 @@ Locks your Wayland session.
 	Set the duration after program start in which one can unlock the screen
 	with just a keypress or by moving the mouse far enough (configurable with
 	*--pointer-hysteresis*). The "grace period" automatically ends when the
-	system is about to sleep or when the signal SIGUSR2 is received.
+	system is about to sleep or when the signal SIGUSR2 is received. By default
+	there is no grace period.
 
 *--pointer-hysteresis* <distance>
 	Specifies the minimum distance the mouse must move in a one-second period

@@ -2546,6 +2546,9 @@ int main(int argc, char **argv) {
 		state.server.zwp_linux_dmabuf = wl_global_create(state.server.display,
 			&zwp_linux_dmabuf_v1_interface, version, &state.forward, bind_linux_dmabuf);
 	}
+	// Stub interfaces (do nothing, but some clients require these to run)
+	state.server.data_device_manager = wl_global_create(state.server.display,
+		&wl_data_device_manager_interface, 3, NULL, bind_wl_data_device_manager);
 
 	// Fortunately, the _interface_ structs are identical between
 	// wayland-client and wayland-server

@@ -1208,3 +1208,78 @@ void bind_fractional_scale(struct wl_client *client, void *data,
 	wl_resource_set_implementation(resource, &fractional_scale_manager_impl, forward, NULL);
 }
 
+
+static void nested_data_source_offer(struct wl_client *client, struct wl_resource *resource,
+		const char *mime_type) {
+}
+static void nested_data_source_destroy(struct wl_client *client, struct wl_resource *resource) {
+	wl_resource_destroy(resource);
+}
+static void nested_data_source_set_actions(struct wl_client *client, struct wl_resource *resource,
+		uint32_t dnd_actions) {
+}
+static const struct wl_data_source_interface data_source_impl = {
+	.destroy = nested_data_source_destroy,
+	.offer = nested_data_source_offer,
+	.set_actions = nested_data_source_set_actions,
+};
+static void data_source_handle_resource_destroy(struct wl_resource *resource) {
+	assert(wl_resource_instance_of(resource, &wl_data_source_interface, &data_source_impl));
+}
+static void nested_ddm_create_data_source(struct wl_client *client, struct wl_resource *resource,
+		uint32_t id) {
+	struct wl_resource *source_resource = wl_resource_create(client, &wl_data_source_interface,
+			wl_resource_get_version(resource), id);
+	if (source_resource == NULL) {
+		wl_client_post_no_memory(client);
+		return;
+	}
+	wl_resource_set_implementation(source_resource, &data_source_impl,
+		NULL, data_source_handle_resource_destroy);
+}
+
+static void nested_data_device_start_drag(struct wl_client *client, struct wl_resource *resource,
+		struct wl_resource *source, struct wl_resource *origin,struct wl_resource *icon, uint32_t serial) {
+}
+static void nested_data_device_set_selection(struct wl_client *client, struct wl_resource *resource,
+		struct wl_resource *source, uint32_t serial) {
+}
+static void nested_data_device_release(struct wl_client *client,
+		struct wl_resource *resource) {
+	wl_resource_destroy(resource);
+}
+static const struct wl_data_device_interface data_device_impl = {
+	.release = nested_data_device_release,
+	.set_selection = nested_data_device_set_selection,
+	.start_drag = nested_data_device_start_drag,
+};
+static void data_device_handle_resource_destroy(struct wl_resource *resource) {
+	assert(wl_resource_instance_of(resource, &wl_data_device_interface, &data_device_impl));
+}
+static void nested_ddm_get_data_device(struct wl_client *client, struct wl_resource *resource,
+		uint32_t id, struct wl_resource *seat) {
+	struct wl_resource *device_resource = wl_resource_create(client, &wl_data_device_interface,
+		wl_resource_get_version(resource), id);
+	if (device_resource == NULL) {
+		wl_client_post_no_memory(client);
+		return;
+	}
+	wl_resource_set_implementation(device_resource, &data_device_impl,
+		NULL, data_device_handle_resource_destroy);
+}
+
+static const struct wl_data_device_manager_interface data_device_manager_impl = {
+	.get_data_device = nested_ddm_get_data_device,
+	.create_data_source = nested_ddm_create_data_source,
+};
+
+void bind_wl_data_device_manager(struct wl_client *client, void *data,
+		uint32_t version, uint32_t id) {
+	struct wl_resource *resource =
+		wl_resource_create(client, &wl_data_device_manager_interface, version, id);
+	if (resource == NULL) {
+		wl_client_post_no_memory(client);
+		return;
+	}
+	wl_resource_set_implementation(resource, &data_device_manager_impl, NULL, NULL);
+}

@@ -122,6 +122,7 @@ struct swaylock_bg_server {
 	struct wl_global *drm;
 	struct wl_global *wp_fractional_scale;
 	struct wl_global *wp_viewporter;
+	struct wl_global *data_device_manager;
 
 	struct wl_list clients;
 	/* If not NULL, this client provides buffers for all surfaces */
@@ -397,6 +398,9 @@ void bind_drm(struct wl_client *client, void *data, uint32_t version, uint32_t i
 void bind_viewporter(struct wl_client *client, void *data, uint32_t version, uint32_t id);
 void bind_fractional_scale(struct wl_client *client, void *data, uint32_t version, uint32_t id);
 void send_dmabuf_feedback_data(struct wl_resource *feedback, const struct dmabuf_feedback_state *state);
+/* No-op interfaces; do the minimum required to implement the interface but have no effect;
+ * used when clients unnecessarily require specific interfaces to run. */
+void bind_wl_data_device_manager(struct wl_client *client, void *data, uint32_t version, uint32_t id);
 
 /* use this to record that in response to the configure event with upstream_serial,
  * a configure event with downstream_serial was sent to the plugin surface.

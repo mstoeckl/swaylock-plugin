@@ -1154,7 +1154,7 @@ static int parse_options(int argc, char **argv, struct swaylock_state *state,
 			}
 			break;
 		case 'v':
-			fprintf(stdout, "swaylock version " SWAYLOCK_VERSION "\n");
+			fprintf(stdout, "swaylock-plugin version " SWAYLOCK_VERSION "\n");
 			exit(EXIT_SUCCESS);
 			break;
 		case LO_BS_HL_COLOR:

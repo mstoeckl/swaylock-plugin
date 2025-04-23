@@ -2002,7 +2002,7 @@ static bool spawn_command(struct swaylock_state *state, int sock_child,
 		swaylock_log(LOG_ERROR, "Failed to forkspawn background plugin: %s", strerror(errno));
 		goto end;
 	}
-	fprintf(stderr, "Forked background plugin (pid = %d): %s\n", pid, state->args.plugin_command);
+	swaylock_log(LOG_DEBUG, "Forked background plugin (pid = %d): %s", pid, state->args.plugin_command);
 	ret = true;
 
 end:

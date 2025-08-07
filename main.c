@@ -1814,7 +1814,7 @@ static void render_fallback_surface(struct swaylock_surface *surface) {
 		return;
 	}
 	cairo_t *cairo = buffer.cairo;
-	cairo_set_source_rgba(buffer.cairo, 0.73, 0.73, 0.73, 1.0);
+	cairo_set_source_u32(buffer.cairo, surface->state->args.colors.background);
 	cairo_set_operator(buffer.cairo, CAIRO_OPERATOR_SOURCE);
 	cairo_paint(cairo);
 

@@ -132,6 +132,9 @@ static void daemonize(void) {
 
 static void destroy_surface(struct swaylock_surface *surface) {
 	struct swaylock_state *state = surface->state;
+	if (surface->frame != NULL) {
+		wl_callback_destroy(surface->frame);
+	}
 	wl_list_remove(&surface->link);
 	if (surface->plugin_surface) {
 		// todo: proper cleanup

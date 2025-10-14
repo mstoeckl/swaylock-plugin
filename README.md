@@ -106,8 +106,24 @@ Run these commands:
     ninja -C build
     sudo ninja -C build install
 
-On systems without PAM, you need to suid the swaylock-plugin binary:
+##### Without PAM
+
+On systems without PAM, `swaylock-plugin` uses `shadow.h`.
+
+Systems which rely on a tcb-like setup (either via musl's native support or via
+glibc+[tcb]), require no further action.
+
+[tcb]: https://www.openwall.com/tcb/
+
+For most other systems, where passwords for all users are stored in `/etc/shadow`,
+`swaylock-plugin` needs to be installed suid:
 
     sudo chmod a+s /usr/local/bin/swaylock-plugin
 
-Swaylock will drop root permissions shortly after startup.
+Optionally, on systems where the file `/etc/shadow` is owned by the `shadow`
+group, the binary can be made sgid instead:
+
+    sudo chgrp shadow /usr/local/bin/swaylock-plugin
+    sudo chmod g+s /usr/local/bin/swaylock-plugin
+
+`swaylock-plugin` will drop root permissions shortly after startup.

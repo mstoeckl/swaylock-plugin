@@ -21,7 +21,9 @@ is replaced by your desired program. Examples:
    swaylock-plugin --command-each 'windowtolayer -- alacritty -e asciiquarium'
    ```
 * You can rotate between wallpapers in a folder by setting the following script
-  as the command; e.g.: `swaylock-plugin --command './example_rotate.sh /path/to/folder'`. (This works by periodically killing the wallpaper program, after which `swaylock-plugin` automatically restarts it.)
+  as the command; e.g.: `swaylock-plugin --command './example_rotate.sh /path/to/folder'`.
+  (This works by periodically killing the wallpaper program, after which
+  `swaylock-plugin` automatically restarts it.)
     ```
     #!/bin/sh
     file=`ls $1 | shuf -n 1`
@@ -29,6 +31,15 @@ is replaced by your desired program. Examples:
     echo "Runnning swaybg for $delay secs on: $1/$file"
     timeout $delay swaybg -i $1/$file
     ```
+* Running X11 animation programs under `swaylock-plugin` is trickier, but
+  can be done using `windowtolayer`, `Xwayland`, and a script
+  ([`example_xwayland_wrapper.py`](example_xwayland_wrapper.py)) that runs a
+  program under `Xwayland`. For example,
+  ```
+  swaylock-plugin --command-each \
+    'windowtolayer example_xwayland_wrapper.py /usr/lib/xscreensaver/abstractile -root'
+  ```
+
 
 ` swaylock-plugin` requires that the Wayland compositor implement the `ext-session-lock-v1` protocol.
 

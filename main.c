@@ -144,6 +144,16 @@ static void destroy_surface(struct swaylock_surface *surface) {
 		surface->plugin_surface->inert = true;
 	}
 
+	if (surface->client) {
+		// Destroy and cleanup client directly, instead of using the default destroy
+		// listener (which handles auto-restart, among other things)
+		wl_list_remove(&surface->client->client_destroy_listener.link);
+		wl_list_init(&surface->client->client_destroy_listener.link);
+		wl_client_destroy(surface->client->client);
+		cleanup_client(surface->client);
+		assert(surface->client == NULL);
+	}
+
 	if (surface->nested_server_output) {
 		wl_global_remove(surface->nested_server_output);
 		// Unlink the resources; calling wl_resource_remove might be unsafe?
@@ -1725,6 +1735,7 @@ void wlr_layer_shell_get_layer_surface(struct wl_client *client,
 		}
 		assert(wl_resource_instance_of(output, &wl_output_interface, &wl_output_impl));
 		sw_surface = wl_resource_get_user_data(output);
+		assert(sw_surface);
 	} else {
 		// Lookup output for client
 		struct swaylock_bg_client *bg_client;
@@ -1762,6 +1773,8 @@ void wlr_layer_shell_get_layer_surface(struct wl_client *client,
 	 * of ensuring this value is unique. todo: simpler solution */
 	struct swaylock_bg_client *bg_client = sw_surface->client ?
 		sw_surface->client : sw_surface->state->server.main_client;
+	assert(bg_client);
+	assert(bg_client->client == client);
 	surf->last_used_plugin_serial = bg_client->serial++;
 
 	/* now, create the object that was asked for */
@@ -2049,8 +2062,10 @@ static void cleanup_client(struct swaylock_bg_client *bg_client) {
 	struct swaylock_state *state = bg_client->state;
 	struct swaylock_surface *output_surface = bg_client->unique_output;
 	if (output_surface) {
+		assert(output_surface->client == bg_client);
 		output_surface->client = NULL;
 	} else {
+		assert(state->server.main_client == bg_client);
 		state->server.main_client = NULL;
 	}
 
@@ -2139,9 +2154,11 @@ static bool run_plugin_command(struct swaylock_state *state,
 		&bg_client->client_destroy_listener);
 
 	if (output_surface) {
+		assert(!output_surface->client);
 		output_surface->client = bg_client;
 		bg_client->unique_output = output_surface;
 	} else {
+		assert(!state->server.main_client);
 		state->server.main_client = bg_client;
 	}
 
@@ -2477,6 +2494,7 @@ int main(int argc, char **argv) {
 
 	struct swaylock_surface *surface;
 	wl_list_for_each(surface, &state.surfaces, link) {
+		assert(!surface->created);
 		create_surface(surface);
 	}
 

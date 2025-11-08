@@ -47,7 +47,8 @@ static void bind_wl_output(struct wl_client *client, void *data,
 		uint32_t version, uint32_t id);
 static void render_fallback_surface(struct swaylock_surface *surface);
 static void output_redraw_timeout(void *data);
-static bool run_plugin_command(struct swaylock_state *state, struct swaylock_surface *output);
+static bool run_plugin_command(struct swaylock_state *state,
+	struct swaylock_surface *output, const char *context);
 static void setup_clientless_mode(struct swaylock_state *state);
 static void cleanup_client(struct swaylock_bg_client *bg_client);
 
@@ -265,7 +266,7 @@ static void create_surface(struct swaylock_surface *surface) {
 	// and can pass these along to the plugin program using environment
 	// variables, so it can e.g. decide which wallpaper program to run.
 	if (state->args.plugin_per_output) {
-		if (!run_plugin_command(state, surface)) {
+		if (!run_plugin_command(state, surface, "for new output")) {
 			setup_clientless_mode(state);
 		}
 	}
@@ -1920,7 +1921,8 @@ static void grace_timeout(void *data) {
 
 uint32_t posix_spawn_setsid_flag(void);
 static bool spawn_command(struct swaylock_state *state, int sock_child,
-		int sock_local, const char *output_name, const char *output_desc) {
+		int sock_local, const char *output_name, const char *output_desc,
+		const char *context) {
 	posix_spawn_file_actions_t actions;
 	posix_spawnattr_t attribs;
 	char **prog_envp = NULL;
@@ -2005,7 +2007,7 @@ static bool spawn_command(struct swaylock_state *state, int sock_child,
 		swaylock_log(LOG_ERROR, "Failed to forkspawn background plugin: %s", strerror(errno));
 		goto end;
 	}
-	swaylock_log(LOG_DEBUG, "Forked background plugin (pid = %d): %s", pid, state->args.plugin_command);
+	swaylock_log(LOG_DEBUG, "Forked background plugin (pid = %d; %s): %s", pid, context, state->args.plugin_command);
 	ret = true;
 
 end:
@@ -2071,7 +2073,7 @@ static void client_destroyed(struct wl_listener *listener, void *data) {
 	// Restart the command, ONLY if it successfully did something the last time
 	// A one-shot program like wayland-info will still cycle indefinitely, so
 	// a better measure appears necessary
-	if (!made_a_registry || !run_plugin_command(state, output_surface)) {
+	if (!made_a_registry || !run_plugin_command(state, output_surface, "restarting")) {
 		// Cannot call `setup_clientless_mode` inside `wl_event_loop_dispatch`,
 		// so mark it to be called immediately afterwards
 		state->start_clientless_mode = true;
@@ -2082,7 +2084,8 @@ static void client_destroyed(struct wl_listener *listener, void *data) {
  * Start the plugin command. If `output` is NULL, apply it to all outputs;
  * otherwise only to the one specified by `output`.
  */
-static bool run_plugin_command(struct swaylock_state *state, struct swaylock_surface *output_surface) {
+static bool run_plugin_command(struct swaylock_state *state,
+		struct swaylock_surface *output_surface, const char *context) {
 	int sockpair[2];
 	if (socketpair(AF_UNIX, SOCK_STREAM, 0, sockpair) == -1) {
 		swaylock_log(LOG_ERROR, "Failed to create socket pair for background plugin");
@@ -2097,7 +2100,8 @@ static bool run_plugin_command(struct swaylock_state *state, struct swaylock_sur
 
 	if (!spawn_command(state, sockpair[0], sockpair[1],
 			output_surface ? output_surface->output_name : NULL,
-			output_surface ? output_surface->output_description : NULL)) {
+			output_surface ? output_surface->output_description : NULL,
+			context)) {
 		close(sockpair[0]);
 		close(sockpair[1]);
 		printf("Failed to run command: %s\n", state->args.plugin_command);
@@ -2577,7 +2581,7 @@ int main(int argc, char **argv) {
 
 	// Start the plugin (assuming it applies to all outputs)
 	if (!state.args.plugin_per_output) {
-		if (!run_plugin_command(&state, NULL)) {
+		if (!run_plugin_command(&state, NULL, "for new output")) {
 			setup_clientless_mode(&state);
 		}
 	}

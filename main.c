@@ -2444,12 +2444,12 @@ int main(int argc, char **argv) {
 	wl_list_init(&state.stale_xdg_output_resources);
 	wl_list_init(&state.server.clients);
 
-	// Create the downstream display early, so that per-output plugin commands
+	// Create the downstream display now, so that per-output plugin commands
 	// launched on upstream output receipt have something to connect to.
-	// Issue: the globals may be delayed, somewhat
 	state.server.display = wl_display_create();
 	wl_display_set_global_filter(state.server.display, global_filter, &state);
 
+	// Roundtrip to receive and bind globals from upstream wl_display
 	if (wl_display_roundtrip(state.display) == -1) {
 		swaylock_log(LOG_ERROR, "wl_display_roundtrip() failed");
 		return EXIT_FAILURE;
@@ -2479,6 +2479,7 @@ int main(int argc, char **argv) {
 	ext_session_lock_v1_add_listener(state.ext_session_lock_v1,
 			&ext_session_lock_v1_listener, &state);
 
+	// Roundtrip to receive information from globals (like wl_seat, wl_shm, etc.)
 	if (wl_display_roundtrip(state.display) == -1) {
 		free(state.args.font);
 		return 1;
@@ -2486,44 +2487,6 @@ int main(int argc, char **argv) {
 
 	state.test_surface = cairo_image_surface_create(CAIRO_FORMAT_RGB24, 1, 1);
 	state.test_cairo = cairo_create(state.test_surface);
-
-	struct swaylock_surface *surface;
-	wl_list_for_each(surface, &state.surfaces, link) {
-		assert(!surface->created);
-		create_surface(surface);
-	}
-
-	while (!state.locked) {
-		if (wl_display_dispatch(state.display) < 0) {
-			swaylock_log(LOG_ERROR, "wl_display_dispatch() failed");
-			return 2;
-		}
-	}
-
-	if (state.args.ready_fd >= 0) {
-		if (write(state.args.ready_fd, "\n", 1) != 1) {
-			swaylock_log(LOG_ERROR, "Failed to send readiness notification");
-			return 2;
-		}
-		close(state.args.ready_fd);
-		state.args.ready_fd = -1;
-	}
-	if (state.args.daemonize) {
-		daemonize();
-	}
-
-	state.sleep_comm_r = -1;
-	state.sleep_comm_w = -1;
-	if (state.args.grace_time > 0.) {
-		float delay_ms = ceilf(state.args.grace_time * 1000.f);
-		int delay = delay_ms >= (float)INT_MAX ? INT_MAX : (int)delay_ms;
-
-		/* Failure of this process just cancels the grace period */
-		if (start_sleep_watcher(&state.sleep_comm_r, &state.sleep_comm_w) == 0) {
-			state.grace_timer = loop_add_timer(state.eventloop, delay, grace_timeout, &state);
-			loop_add_fd(state.eventloop, state.sleep_comm_r, POLLIN, sleep_in, &state);
-		}
-	}
 
 	/* fill in dmabuf modifier list if empty and upstream provided dmabuf-feedback */
 	if (state.forward.linux_dmabuf && zwp_linux_dmabuf_v1_get_version(state.forward.linux_dmabuf) >= 4) {
@@ -2592,15 +2555,8 @@ int main(int argc, char **argv) {
 	}
 	state.server.loop = wl_display_get_event_loop(state.server.display);
 
-	// Start the plugin (assuming it applies to all outputs)
-	if (!state.args.plugin_per_output) {
-		if (!run_plugin_command(&state, NULL, "for new output")) {
-			setup_clientless_mode(&state);
-		}
-	}
-
 	loop_add_fd(state.eventloop, wl_display_get_fd(state.display), POLLIN,
-			display_in, NULL);
+		display_in, NULL);
 
 	loop_add_fd(state.eventloop, get_comm_reply_fd(), POLLIN, comm_in, NULL);
 
@@ -2628,7 +2584,61 @@ int main(int argc, char **argv) {
 	sa2.sa_flags = 0;
 	sigaction(SIGCHLD, &sa2, NULL);
 
+	state.sleep_comm_r = -1;
+	state.sleep_comm_w = -1;
+
+	// Create outputs (possibly starting plugin commands for them)
+	struct swaylock_surface *surface;
+	wl_list_for_each(surface, &state.surfaces, link) {
+		assert(!surface->created);
+		create_surface(surface);
+	}
+	// Start the plugin (assuming it applies to all outputs)
+	if (!state.args.plugin_per_output) {
+		if (!run_plugin_command(&state, NULL, "for new output")) {
+			setup_clientless_mode(&state);
+		}
+	}
+
+	// Wait until the compositor locks the screen (or cancels), dispatching
+	// plugin connections to draw lock surfaces, as compositors may wait to
+	// decide until the lock surfaces are all ready.
 	state.run_display = true;
+	while (!state.locked && state.run_display) {
+		errno = 0;
+		if (wl_display_flush(state.display) == -1 && errno != EAGAIN) {
+			break;
+		}
+		if (state.server.display) {
+			wl_display_flush_clients(state.server.display);
+		}
+
+		loop_poll(state.eventloop);
+	}
+
+	// Post lock operations
+	if (state.args.ready_fd >= 0) {
+		if (write(state.args.ready_fd, "\n", 1) != 1) {
+			swaylock_log(LOG_ERROR, "Failed to send readiness notification");
+			return 2;
+		}
+		close(state.args.ready_fd);
+		state.args.ready_fd = -1;
+	}
+	if (state.args.daemonize) {
+		daemonize();
+	}
+	if (state.args.grace_time > 0.) {
+		float delay_ms = ceilf(state.args.grace_time * 1000.f);
+		int delay = delay_ms >= (float)INT_MAX ? INT_MAX : (int)delay_ms;
+
+		/* Failure of this process just cancels the grace period */
+		if (start_sleep_watcher(&state.sleep_comm_r, &state.sleep_comm_w) == 0) {
+			state.grace_timer = loop_add_timer(state.eventloop, delay, grace_timeout, &state);
+			loop_add_fd(state.eventloop, state.sleep_comm_r, POLLIN, sleep_in, &state);
+		}
+	}
+
 	while (state.run_display) {
 		errno = 0;
 		if (wl_display_flush(state.display) == -1 && errno != EAGAIN) {

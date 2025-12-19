@@ -34,7 +34,7 @@ try:
         def g(*a):
             raise TimeoutError()
         signal.signal(signal.SIGALRM, g)
-        signal.alarm(1)
+        signal.alarm(5)
         assert int(os.fdopen(r).readline()) == d
         signal.alarm(0)
         e = os.environ.copy()

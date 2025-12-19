@@ -287,7 +287,6 @@ struct swaylock_state {
 	struct wl_display *display;
 	struct wl_compositor *compositor;
 	struct wl_subcompositor *subcompositor;
-	struct zwlr_input_inhibit_manager_v1 *input_inhibit_manager;
 	struct wl_shm *shm;
 	struct zwp_linux_dmabuf_feedback_v1 *dmabuf_default_feedback;
 	struct wl_list surfaces;

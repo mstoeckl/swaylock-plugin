@@ -2481,11 +2481,6 @@ int main(int argc, char **argv) {
 
 	if (wl_display_roundtrip(state.display) == -1) {
 		free(state.args.font);
-		if (state.input_inhibit_manager) {
-			swaylock_log(LOG_ERROR, "Exiting - failed to inhibit input:"
-					" is another lockscreen already running?");
-			return 2;
-		}
 		return 1;
 	}
 

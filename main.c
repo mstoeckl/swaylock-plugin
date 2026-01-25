@@ -40,8 +40,8 @@
 #define WL_OUTPUT_MM_PER_PIX 0.264
 #define WL_OUTPUT_VERSION 4
 
-#define TIMEOUT_CONNECT 5000
-#define TIMEOUT_SURFACE 10000
+#define TIMEOUT_CONNECT 2500
+#define TIMEOUT_SURFACE 4000
 
 static void bind_wl_output(struct wl_client *client, void *data,
 		uint32_t version, uint32_t id);

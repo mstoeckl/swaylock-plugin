@@ -31,7 +31,6 @@
 #include "ext-session-lock-v1-client-protocol.h"
 #include "xdg-output-unstable-v1-client-protocol.h"
 #include "xdg-output-unstable-v1-server-protocol.h"
-#include "fullscreen-shell-unstable-v1-client-protocol.h"
 #include "wlr-layer-shell-unstable-v1-server-protocol.h"
 #include "linux-dmabuf-unstable-v1-client-protocol.h"
 #include "fractional-scale-v1-server-protocol.h"

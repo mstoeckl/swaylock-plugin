@@ -73,24 +73,22 @@ wayland_scanner_server = generator(
 	arguments: ['server-header', '@INPUT@', '@OUTPUT@'],
 )
 
+proxy_protocols = [
+	wl_protocol_dir / 'unstable/xdg-output/xdg-output-unstable-v1.xml',
+	wl_protocol_dir / 'unstable/linux-dmabuf/linux-dmabuf-unstable-v1.xml',
+	wl_protocol_dir / 'stable/viewporter/viewporter.xml',
+	wl_protocol_dir / 'staging/fractional-scale/fractional-scale-v1.xml',
+	'wayland-drm.xml',
+]
+
 client_protocols = [
-	wl_protocol_dir / 'stable/xdg-shell/xdg-shell.xml',
 	wl_protocol_dir / 'staging/ext-session-lock/ext-session-lock-v1.xml',
-	wl_protocol_dir / 'unstable/xdg-output/xdg-output-unstable-v1.xml',
-	wl_protocol_dir / 'unstable/fullscreen-shell/fullscreen-shell-unstable-v1.xml',
-	wl_protocol_dir / 'unstable/linux-dmabuf/linux-dmabuf-unstable-v1.xml',
-	wl_protocol_dir / 'stable/viewporter/viewporter.xml',
-	wl_protocol_dir / 'staging/fractional-scale/fractional-scale-v1.xml',
-	'wayland-drm.xml',
-]
+] + proxy_protocols
+
 server_protocols = [
-	wl_protocol_dir / 'unstable/xdg-output/xdg-output-unstable-v1.xml',
-	wl_protocol_dir / 'unstable/linux-dmabuf/linux-dmabuf-unstable-v1.xml',
-	wl_protocol_dir / 'stable/viewporter/viewporter.xml',
-	wl_protocol_dir / 'staging/fractional-scale/fractional-scale-v1.xml',
+	wl_protocol_dir / 'stable/xdg-shell/xdg-shell.xml',
 	'wlr-layer-shell-unstable-v1.xml',
-	'wayland-drm.xml',
-]
+] + proxy_protocols
 
 protos_src = []
 foreach xml : client_protocols

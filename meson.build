@@ -29,7 +29,7 @@ endif
 
 wayland_client = dependency('wayland-client', version: '>=1.20.0')
 wayland_server = dependency('wayland-server', version: '>=1.20.0')
-wayland_protos = dependency('wayland-protocols', version: '>=1.25', fallback: 'wayland-protocols')
+wayland_protos = dependency('wayland-protocols', version: '>=1.47', fallback: 'wayland-protocols')
 wayland_scanner = dependency('wayland-scanner', version: '>=1.15.0', native: true)
 xkbcommon = dependency('xkbcommon')
 cairo = dependency('cairo')
@@ -78,6 +78,8 @@ proxy_protocols = [
 	wl_protocol_dir / 'unstable/linux-dmabuf/linux-dmabuf-unstable-v1.xml',
 	wl_protocol_dir / 'stable/viewporter/viewporter.xml',
 	wl_protocol_dir / 'staging/fractional-scale/fractional-scale-v1.xml',
+	wl_protocol_dir / 'staging/color-representation/color-representation-v1.xml',
+	wl_protocol_dir / 'staging/color-management/color-management-v1.xml',
 	'wayland-drm.xml',
 ]
 
@@ -129,6 +131,7 @@ sources = [
 	'background-image.c',
 	'cairo.c',
 	'comm.c',
+	'forward-client.c',
 	'forward.c',
 	'log.c',
 	'loop.c',

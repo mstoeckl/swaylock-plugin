@@ -12,6 +12,8 @@
 #include "wayland-drm-client-protocol.h"
 #include "fractional-scale-v1-client-protocol.h"
 #include "viewporter-client-protocol.h"
+#include "color-management-v1-client-protocol.h"
+#include "color-representation-v1-client-protocol.h"
 
 // Indicator state: status of authentication attempt
 enum auth_state {
@@ -123,6 +125,8 @@ struct swaylock_bg_server {
 	struct wl_global *wp_fractional_scale;
 	struct wl_global *wp_viewporter;
 	struct wl_global *data_device_manager;
+	struct wl_global *wp_color_manager;
+	struct wl_global *wp_color_representation_manager;
 
 	struct wl_list clients;
 	/* If not NULL, this client provides buffers for all surfaces */
@@ -155,6 +159,21 @@ struct dmabuf_feedback_state  {
 	size_t tranches_len;
 };
 
+struct color_coef_range {
+	uint32_t coefficients;
+	uint32_t range;
+};
+
+struct image_description_properties;
+struct image_description_state {
+	struct wp_image_description_info_v1 *info_request;
+	bool dirty;
+	struct image_description_properties *pending, *current;
+
+	struct swaylock_surface *surface;
+	struct swaylock_state *state;
+};
+
 // todo: merge with swaylock_bg_server ?
 struct forward_state {
 	/* these pointers are copies of those in swaylock_state */
@@ -176,14 +195,54 @@ struct forward_state {
 	struct wp_viewporter *viewporter;
 	struct wp_fractional_scale_manager_v1 *fractional_scale;
 
+	struct wp_color_manager_v1 *color_management; // latest version
+	struct wp_color_representation_manager_v1 *color_representation;
+
 	uint32_t *shm_formats;
-	uint32_t shm_formats_len;
+	size_t shm_formats_len;
 
 	struct dmabuf_modifier_pair *dmabuf_formats;
-	uint32_t dmabuf_formats_len;
+	size_t dmabuf_formats_len;
 
 	struct dmabuf_feedback_state current, pending;
 	struct feedback_tranche pending_tranche;
+
+	/* True once wp_color_representation_manager_v1::done is received */
+	bool color_representation_done;
+	uint32_t *alpha_modes;
+	size_t alpha_modes_len;
+
+	struct color_coef_range *coef_range_pairs;
+	size_t coef_range_pairs_len;
+
+	uint32_t color_manager_version;
+	/* True once wp_color_manager_v1::done is received */
+	bool color_management_done;
+	uint32_t *supported_intents;
+	size_t supported_intents_len;
+
+	uint32_t *supported_features;
+	size_t supported_features_len;
+
+	uint32_t *supported_tfs;
+	size_t supported_tfs_len;
+
+	uint32_t *supported_primaries;
+	size_t supported_primaries_len;
+
+	// Test surface created to get the default surface parameteric feedback
+	// in the absence of any other outputs.
+	//
+	// TODO: rework surface creation process so that lock surfaces are created
+	// and committed immediately (at the very first roundtrip), so that they have
+	// a clearly associated output. Then delay forwarding the first configure
+	// event (to create an output and/or plugin client) until all required
+	// information for the output has arrived.
+	struct wl_surface *test_surface;
+	struct wp_color_management_surface_feedback_v1 *test_feedback;
+	struct image_description_state desc_surface;
+	// List of all nested color feedback resources
+	struct wl_list color_feedback_resources;
 };
 
 struct damage_record {
@@ -211,6 +270,75 @@ struct forward_buffer {
 #define BUFFER_UNREACHABLE (struct forward_buffer *)(-1)
 #define BUFFER_COMMITTED (struct forward_buffer *)(-2)
 
+
+/* Image description type used for both client-created and server-created image
+ * descriptions. */
+struct forward_image_desc {
+	/* may be null if plugin program deleted it */
+	struct wl_resource *resource;
+	/* upstream image description, kept alive until commit time */
+	struct wp_image_description_v1 *description;
+	/* list of surfaces where description is pending */
+	struct wl_list pending_surfaces;
+	/* list of surfaces where description is committed */
+	struct wl_list committed_surfaces;
+
+	/* is non-NULL if this is a server-side description */
+	struct image_description_properties *properties;
+};
+
+/* Information about an image description object, cached so that it can be
+ * immediately replayed later when a client requests it. */
+struct image_description_properties {
+	// If true, the requested image description failed and no information is available
+	bool failed;
+	uint32_t failure_cause;
+	char *failure_reason;
+
+	int icc_profile; // -1 if absent
+	uint32_t icc_profile_len;
+
+	bool has_tf;
+	uint32_t tf;
+
+	bool has_eexp;
+	uint32_t eexp;
+
+	bool has_primaries_named;
+	uint32_t primaries;
+
+	bool has_primaries;
+	uint32_t prx, pry, pgx, pgy, pbx, pby, pwx, pwy;
+
+	bool has_luminances;
+	uint32_t min_lum, max_lum, reference_lum;
+
+	bool has_mastering_display_primaries;
+	uint32_t mrx, mry, mgx, mgy, mbx, mby, mwx, mwy;
+
+	bool has_mastering_luminance;
+	uint32_t mastering_min_lum, mastering_max_lum;
+
+	bool has_max_cll;
+	uint32_t max_cll;
+
+	bool has_max_fall;
+	uint32_t max_fall;
+
+	struct wp_image_description_v1 *description;
+	uint32_t color_identity_v2_hi, color_identity_v2_lo;
+	uint32_t color_identity_v1;
+
+	// This needs to be reference counted, because the response to client requests
+	// for information may to be split over a full roundtrip. (The identity value
+	// and the later information sent need to be consistent.)
+	size_t reference_count;
+};
+
+void unref_image_description_props(struct image_description_properties *s);
+struct image_description_properties *create_image_description_props(void);
+
+
 struct surface_state {
 	/* wl_buffer, invoke get_resource for upstream */
 	struct forward_buffer *attachment;
@@ -226,6 +354,20 @@ struct surface_state {
 	wl_fixed_t viewport_source_h;
 	int32_t viewport_dest_width;
 	int32_t viewport_dest_height;
+
+	/* Color representation state */
+	bool has_alpha_mode;
+	uint32_t alpha_mode;
+	bool has_coef_range;
+	uint32_t coefficients;
+	uint32_t range;
+	bool has_chroma_location;
+	uint32_t chroma_location;
+
+	/* Color management state */
+	struct forward_image_desc *image_desc;
+	uint32_t render_intent; // this only applies if image_desc != NULL
+	struct wl_list image_desc_link;
 };
 
 struct serial_pair {
@@ -245,6 +387,9 @@ struct serial_pair {
 struct forward_surface {
 	bool has_been_configured;
 	struct wl_resource *layer_surface; // downstream only
+
+	/* Used to look up global properties like default parametric image description */
+	struct forward_state *state;
 
 	/* is null until get_layer_surface is called and initializes this */
 	struct swaylock_surface *sway_surface;
@@ -277,6 +422,12 @@ struct forward_surface {
 
 	/* The unique fractional_scale resource attached to the surface, if any */
 	struct wl_resource *fractional_scale;
+
+	/* The unique color management resource attached to the surface, if any */
+	struct wl_resource *color_surface;
+
+	/* The unique color representation resource attached to the surface, if any */
+	struct wl_resource *color_representation;
 };
 
 struct swaylock_state {
@@ -313,6 +464,7 @@ struct swaylock_state {
 	// for nested server, output was destroyed
 	struct wl_list stale_wl_output_resources;
 	struct wl_list stale_xdg_output_resources;
+	struct wl_list stale_color_output_resources;
 };
 
 struct swaylock_surface {
@@ -329,12 +481,17 @@ struct swaylock_surface {
 	struct ext_session_lock_surface_v1 *ext_session_lock_surface_v1;
 	struct wp_viewport *viewport;
 	struct wp_fractional_scale_v1* fractional_scale;
+	struct wp_color_representation_surface_v1 *color_rep_surface;
+	struct wp_color_management_surface_v1 *color_surface;
+	struct wp_color_management_output_v1 *color_output;
+	struct wp_image_description_v1 *color_output_description;
 	uint32_t last_fractional_scale; /* is zero if nothing received yet */
 	struct pool_buffer indicator_buffers[2];
 	bool created;
 	bool dirty;
 	uint32_t width, height;
 	int32_t scale;
+	bool has_output_done;
 	enum wl_output_subpixel subpixel;
 	char *output_name;
 	char *output_description;
@@ -343,10 +500,15 @@ struct swaylock_surface {
 	struct wl_list link;
 	struct wl_callback *frame;
 
+	// The wp_color_management_surface_v1 description
+	struct image_description_state output_desc;
+
 	struct wl_global *nested_server_output;
 	// lists of associated resources
 	struct wl_list nested_server_wl_output_resources;
 	struct wl_list nested_server_xdg_output_resources;
+	struct wl_list nested_server_color_output_resources;
+	struct wl_list nested_server_color_feedback_resources;
 
 	/* the serial of the configure which first established the size of the
 	 * surface; will be needed when plugin surface is set up and needs to link
@@ -396,10 +558,26 @@ void bind_linux_dmabuf(struct wl_client *client, void *data, uint32_t version, u
 void bind_drm(struct wl_client *client, void *data, uint32_t version, uint32_t id);
 void bind_viewporter(struct wl_client *client, void *data, uint32_t version, uint32_t id);
 void bind_fractional_scale(struct wl_client *client, void *data, uint32_t version, uint32_t id);
+void bind_color_manager(struct wl_client *client, void *data, uint32_t version, uint32_t id);
+void bind_color_representation_manager(struct wl_client *client, void *data, uint32_t version, uint32_t id);
 void send_dmabuf_feedback_data(struct wl_resource *feedback, const struct dmabuf_feedback_state *state);
 /* No-op interfaces; do the minimum required to implement the interface but have no effect;
  * used when clients unnecessarily require specific interfaces to run. */
 void bind_wl_data_device_manager(struct wl_client *client, void *data, uint32_t version, uint32_t id);
+
+/* Listeners to record upstream info broadcasts; take &forward_state */
+extern const struct wl_shm_listener shm_listener;
+extern const struct zwp_linux_dmabuf_v1_listener linux_dmabuf_listener;
+extern const struct zwp_linux_dmabuf_feedback_v1_listener dmabuf_feedback_listener;
+extern const struct wp_color_manager_v1_listener color_manager_listener;
+extern const struct wp_color_representation_manager_v1_listener color_representation_manager_listener;
+extern const struct wp_color_management_output_v1_listener color_output_listener;
+extern const struct wp_image_description_info_v1_listener image_info_listener;
+extern const struct wp_image_description_v1_listener image_desc_listener;
+extern const struct wp_image_description_v1_listener image_output_desc_listener;
+extern const struct wp_color_management_surface_feedback_v1_listener color_surface_feedback_listener;
+
+uint32_t color_identity_v2_to_v1(uint32_t identity_hi, uint32_t identity_lo);
 
 /* use this to record that in response to the configure event with upstream_serial,
  * a configure event with downstream_serial was sent to the plugin surface.
@@ -418,6 +596,7 @@ struct swaylock_image {
 void swaylock_handle_key(struct swaylock_state *state,
 		xkb_keysym_t keysym, uint32_t codepoint);
 
+void init_surface_if_ready(struct swaylock_surface *surface);
 void render(struct swaylock_surface *surface);
 void damage_state(struct swaylock_state *state);
 void clear_password_buffer(struct swaylock_password *pw);

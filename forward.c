@@ -9,12 +9,16 @@
 #include <wayland-server-protocol.h>
 #include <stdlib.h>
 #include <assert.h>
-#include "linux-dmabuf-unstable-v1-server-protocol.h"
-#include "wayland-drm-server-protocol.h"
-#include "wlr-layer-shell-unstable-v1-server-protocol.h"
+
+#include "color-management-v1-server-protocol.h"
+#include "color-representation-v1-server-protocol.h"
 #include "ext-session-lock-v1-client-protocol.h"
 #include "fractional-scale-v1-server-protocol.h"
+#include "linux-dmabuf-unstable-v1-server-protocol.h"
 #include "viewporter-server-protocol.h"
+#include "wayland-drm-server-protocol.h"
+#include "wlr-layer-shell-unstable-v1-server-protocol.h"
+
 
 static const struct wl_surface_interface surface_impl;
 static const struct wl_buffer_interface buffer_impl;
@@ -24,6 +28,12 @@ static const struct zwp_linux_buffer_params_v1_interface linux_dmabuf_params_imp
 static const struct zwp_linux_dmabuf_feedback_v1_interface linux_dmabuf_feedback_v1_impl;
 static const struct wp_viewport_interface viewport_impl;
 static const struct wp_fractional_scale_v1_interface fractional_scale_impl;
+static const struct wp_image_description_creator_icc_v1_interface desc_creator_icc_impl;
+static const struct wp_image_description_creator_params_v1_interface desc_creator_params_impl;
+static const struct wp_color_management_surface_v1_interface color_surface_impl;
+static const struct wp_image_description_v1_interface image_desc_impl;
+static const struct wp_color_representation_surface_v1_interface color_rep_surface_impl;
+static void delete_image_desc_if_unreferenced(struct forward_image_desc* desc);
 
 struct forward_params {
 	struct zwp_linux_buffer_params_v1* params;
@@ -280,6 +290,71 @@ static void nested_surface_commit(struct wl_client *client,
 		surface->committed.viewport_source_w = surface->pending.viewport_source_w;
 		surface->committed.viewport_source_h = surface->pending.viewport_source_h;
 	}
+
+	if (surface->committed.has_alpha_mode != surface->pending.has_alpha_mode ||
+			surface->committed.alpha_mode != surface->pending.alpha_mode ||
+			surface->committed.has_chroma_location != surface->pending.has_chroma_location ||
+			surface->committed.chroma_location != surface->pending.chroma_location ||
+			surface->committed.has_coef_range != surface->pending.has_coef_range ||
+			surface->committed.coefficients != surface->pending.coefficients ||
+			surface->committed.range != surface->pending.range) {
+		assert(sw_surf->color_rep_surface);
+		// There is no way to reset color representation parameters to default
+		// other than unsetting and recreating the surface. To simplify the logic,
+		// recreate the color rep surface on every change.
+		wp_color_representation_surface_v1_destroy(sw_surf->color_rep_surface);
+		sw_surf->color_rep_surface = wp_color_representation_manager_v1_get_surface(
+			sw_surf->state->forward.color_representation, sw_surf->surface);
+		if (surface->pending.has_alpha_mode) {
+			wp_color_representation_surface_v1_set_alpha_mode(
+				sw_surf->color_rep_surface, surface->pending.alpha_mode);
+		}
+		if (surface->pending.has_chroma_location) {
+			wp_color_representation_surface_v1_set_chroma_location(
+				sw_surf->color_rep_surface, surface->pending.chroma_location);
+		}
+		if (surface->pending.has_coef_range) {
+			wp_color_representation_surface_v1_set_coefficients_and_range(
+				sw_surf->color_rep_surface, surface->pending.coefficients,
+				surface->pending.range);
+		}
+		surface->committed.has_alpha_mode = surface->pending.has_alpha_mode;
+		surface->committed.alpha_mode = surface->pending.alpha_mode;
+		surface->committed.has_chroma_location = surface->pending.has_chroma_location;
+		surface->committed.chroma_location = surface->pending.chroma_location;
+		surface->committed.has_coef_range = surface->pending.has_coef_range;
+		surface->committed.coefficients = surface->pending.coefficients;
+		surface->committed.range = surface->pending.range;
+	}
+
+	if (surface->committed.image_desc != surface->pending.image_desc ||
+		surface->committed.render_intent != surface->pending.render_intent) {
+		assert(sw_surf->color_surface);
+		if (!surface->pending.image_desc) {
+			wp_color_management_surface_v1_unset_image_description(
+				sw_surf->color_surface);
+		} else {
+			wp_color_management_surface_v1_set_image_description(
+				sw_surf->color_surface, surface->pending.image_desc->description,
+				surface->pending.render_intent);
+		}
+		if (surface->committed.image_desc != surface->pending.image_desc) {
+			if (surface->committed.image_desc) {
+				wl_list_remove(&surface->committed.image_desc_link);
+				delete_image_desc_if_unreferenced(surface->committed.image_desc);
+			}
+			if (surface->pending.image_desc) {
+				surface->committed.image_desc = surface->pending.image_desc;
+				wl_list_insert(&surface->pending.image_desc->committed_surfaces,
+					&surface->committed.image_desc_link);
+			} else {
+				surface->committed.image_desc = NULL;
+				wl_list_init(&surface->committed.image_desc_link);
+			}
+		}
+		surface->committed.render_intent = surface->pending.render_intent;
+	}
+
 	// The protocol does not make this fully explicit, but the buffer should
 	// be attached _each time_ that any damage is sent alongside it, even if
 	// the buffer is the same. This is also necessary to ensure that the
@@ -484,6 +559,15 @@ static void surface_handle_resource_destroy(struct wl_resource *resource) {
 		wl_list_remove(&fwd_surface->committed.attachment_link);
 	}
 
+	if (fwd_surface->pending.image_desc) {
+		wl_list_remove(&fwd_surface->pending.image_desc_link);
+		delete_image_desc_if_unreferenced(fwd_surface->pending.image_desc);
+	}
+	if (fwd_surface->committed.image_desc) {
+		wl_list_remove(&fwd_surface->committed.image_desc_link);
+		delete_image_desc_if_unreferenced(fwd_surface->committed.image_desc);
+	}
+
 	free(fwd_surface->buffer_damage);
 	free(fwd_surface->old_damage);
 	free(fwd_surface->serial_table);
@@ -493,6 +577,12 @@ static void surface_handle_resource_destroy(struct wl_resource *resource) {
 	}
 	if (fwd_surface->fractional_scale) {
 		wl_resource_set_user_data(fwd_surface->fractional_scale, NULL);
+	}
+	if (fwd_surface->color_surface) {
+		wl_resource_set_user_data(fwd_surface->color_surface, NULL);
+	}
+	if (fwd_surface->color_representation) {
+		wl_resource_set_user_data(fwd_surface->color_representation, NULL);
 	}
 
 	free(fwd_surface);
@@ -517,6 +607,7 @@ static void default_surface_state(struct surface_state *state) {
 static void compositor_create_surface(struct wl_client *client,
 		struct wl_resource *resource, uint32_t id) {
 	assert(wl_resource_instance_of(resource, &wl_compositor_interface, &compositor_impl));
+	struct forward_state *state = wl_resource_get_user_data(resource);
 
 	struct wl_resource *surf_resource = wl_resource_create(client, &wl_surface_interface,
 		wl_resource_get_version(resource), id);
@@ -530,6 +621,7 @@ static void compositor_create_surface(struct wl_client *client,
 		wl_client_post_no_memory(client);
 		return;
 	}
+	fwd_surface->state = state;
 	wl_list_init(&fwd_surface->frame_callbacks);
 	default_surface_state(&fwd_surface->pending);
 	default_surface_state(&fwd_surface->committed);
@@ -1207,6 +1299,738 @@ void bind_fractional_scale(struct wl_client *client, void *data,
 	struct forward_state *forward = data;
 	wl_resource_set_implementation(resource, &fractional_scale_manager_impl, forward, NULL);
 }
+
+
+static void color_surface_handle_resource_destroy(struct wl_resource *resource) {
+	assert(wl_resource_instance_of(resource, &wp_color_management_surface_v1_interface, &color_surface_impl));
+	struct forward_surface *fwd_surface = wl_resource_get_user_data(resource);
+	if (fwd_surface) {
+		assert(fwd_surface->color_surface == resource);
+		fwd_surface->color_surface = NULL;
+	}
+}
+static void nested_color_surface_unset_image_desc(struct wl_client *client,
+		struct wl_resource *resource);
+static void nested_color_surface_destroy(struct wl_client *client,
+		struct wl_resource *resource) {
+	// Destroying the surface also unsets the image description
+	nested_color_surface_unset_image_desc(client, resource);
+	wl_resource_destroy(resource);
+}
+static void nested_color_surface_set_image_desc(struct wl_client *client,
+		struct wl_resource *resource, struct wl_resource *image_description,
+		uint32_t render_intent) {
+	struct forward_surface *fwd_surface = wl_resource_get_user_data(resource);
+	if (!fwd_surface) {
+		return;
+	}
+	if (fwd_surface->pending.image_desc) {
+		wl_list_remove(&fwd_surface->pending.image_desc_link);
+		delete_image_desc_if_unreferenced(fwd_surface->pending.image_desc);
+	}
+	struct forward_image_desc *fwd_desc = wl_resource_get_user_data(image_description);
+	fwd_surface->pending.render_intent = render_intent;
+	fwd_surface->pending.image_desc = fwd_desc;
+	wl_list_insert(&fwd_desc->pending_surfaces, &fwd_surface->pending.image_desc_link);
+}
+static void nested_color_surface_unset_image_desc(struct wl_client *client,
+		struct wl_resource *resource) {
+	struct forward_surface *fwd_surface = wl_resource_get_user_data(resource);
+	if (!fwd_surface) {
+		return;
+	}
+	if (fwd_surface->pending.image_desc) {
+		wl_list_remove(&fwd_surface->pending.image_desc_link);
+		delete_image_desc_if_unreferenced(fwd_surface->pending.image_desc);
+	}
+	fwd_surface->pending.render_intent = 0;
+	fwd_surface->pending.image_desc = NULL;
+	wl_list_init(&fwd_surface->pending.image_desc_link);
+}
+static const struct wp_color_management_surface_v1_interface color_surface_impl = {
+	.destroy = nested_color_surface_destroy,
+	.set_image_description = nested_color_surface_set_image_desc,
+	.unset_image_description =nested_color_surface_unset_image_desc,
+};
+
+
+
+
+
+static void delete_image_desc_if_unreferenced(struct forward_image_desc* desc) {
+	if (desc->resource) {
+		// Client still can refer to object
+		return;
+	}
+	if (!wl_list_empty(&desc->committed_surfaces) || !wl_list_empty(&desc->pending_surfaces)) {
+		return;
+	}
+	assert(desc->description);
+	if (desc->properties) {
+		unref_image_description_props(desc->properties);
+	} else {
+		wp_image_description_v1_destroy(desc->description);
+	}
+	desc->description = NULL;
+	free(desc);
+}
+static void image_desc_handle_resource_destroy(struct wl_resource *resource) {
+	assert(wl_resource_instance_of(resource, &wp_image_description_v1_interface, &image_desc_impl));
+	struct forward_image_desc* fwd_desc =
+		wl_resource_get_user_data(resource);
+	assert(fwd_desc->resource == resource);
+	fwd_desc->resource = NULL;
+	delete_image_desc_if_unreferenced(fwd_desc);
+}
+void nested_image_desc_destroy(struct wl_client *client,
+			struct wl_resource *resource) {
+	wl_resource_destroy(resource);
+}
+void nested_image_desc_get_information(struct wl_client *client,
+		struct wl_resource *resource, uint32_t information) {
+	struct forward_image_desc* fwd_desc =
+		wl_resource_get_user_data(resource);
+	if (fwd_desc->properties) {
+		struct wl_resource *info = wl_resource_create(client,
+			&wp_image_description_info_v1_interface, wl_resource_get_version(resource),
+			information);
+		if (info == NULL) {
+			wl_client_post_no_memory(client);
+			return;
+		}
+
+		struct image_description_properties *s = fwd_desc->properties;
+		if (s->icc_profile >= 0) {
+			wp_image_description_info_v1_send_icc_file(info,
+				s->icc_profile, s->icc_profile_len);
+		}
+
+		if (s->has_tf) {
+			wp_image_description_info_v1_send_tf_named(info, s->tf);
+		}
+		if (s->has_eexp) {
+			wp_image_description_info_v1_send_tf_power(info, s->eexp);
+		}
+		if (s->has_primaries_named) {
+			wp_image_description_info_v1_send_primaries_named(info, s->primaries);
+		}
+		if (s->has_primaries) {
+			wp_image_description_info_v1_send_primaries(info, s->prx, s->pry,
+				s->pgx, s->pgy, s->pbx, s->pby, s->pwx, s->pwy);
+		}
+		if (s->has_luminances) {
+			wp_image_description_info_v1_send_luminances(info,
+				s->min_lum, s->max_lum, s->reference_lum);
+		}
+		if (s->has_mastering_display_primaries) {
+			wp_image_description_info_v1_send_target_primaries(info,
+				s->mrx, s->mry, s->mgx, s->mgy, s->mbx, s->mby, s->mwx, s->mwy);
+		}
+		if (s->has_mastering_luminance) {
+			wp_image_description_info_v1_send_target_luminance(info,
+				s->mastering_min_lum, s->mastering_max_lum);
+		}
+		if (s->has_max_cll) {
+			wp_image_description_info_v1_send_target_max_cll(info, s->max_cll);
+		}
+		if (s->has_max_fall) {
+			wp_image_description_info_v1_send_target_max_fall(info, s->max_fall);
+		}
+
+		wp_image_description_info_v1_send_done(info);
+		wl_resource_destroy(info);
+	} else {
+		// Client created image description objects do not support get_information
+		wl_resource_post_error(resource, WP_IMAGE_DESCRIPTION_V1_ERROR_NO_INFORMATION,
+			"client controlled image description");
+	}
+}
+static const struct wp_image_description_v1_interface image_desc_impl = {
+	.destroy = nested_image_desc_destroy,
+	.get_information = nested_image_desc_get_information,
+};
+
+static void image_desc_handle_failed(void *data,
+		struct wp_image_description_v1 *wp_image_description_v1, uint32_t cause,
+		const char *msg) {
+	struct forward_image_desc* fwd_desc = data;
+	if (fwd_desc->resource) {
+		wp_image_description_v1_send_failed(fwd_desc->resource, cause, msg);
+	}
+}
+static void image_desc_handle_ready(void *data,
+		struct wp_image_description_v1 *wp_image_description_v1, uint32_t identity) {
+	// ID numbers are server allocated, and swaylock's image descriptions
+	// outlive the plugin clients's, so these will remain unique even if there
+	// are multiple clients or clients are replaced
+	struct forward_image_desc* fwd_desc = data;
+	if (fwd_desc->resource) {
+		wp_image_description_v1_send_ready(fwd_desc->resource, identity);
+	}
+}
+uint32_t color_identity_v2_to_v1(uint32_t identity_hi, uint32_t identity_lo) {
+	// In practice, v2 identities are densely packed sequential IDs and
+	// are extremely unlikely to wrap around a u32. In the unlikely event that
+	// both a) a compositor doesn't use this allocation method b) a client
+	// cares, it is possible to maintain a map from u64 ids to the
+	// associated live image descriptions and current preferred ids of
+	// the upstream color surfaces.
+	return identity_lo;
+}
+static void image_desc_handle_ready2(void *data,
+		struct wp_image_description_v1 *wp_image_description_v1, uint32_t identity_hi,
+		uint32_t identity_lo) {
+	struct forward_image_desc* fwd_desc = data;
+	if (fwd_desc->resource) {
+		if (wl_resource_get_version(fwd_desc->resource) >= 2) {
+			wp_image_description_v1_send_ready2(fwd_desc->resource, identity_hi, identity_lo);
+		} else {
+			wp_image_description_v1_send_ready(fwd_desc->resource,
+				color_identity_v2_to_v1(identity_hi, identity_lo));
+		}
+	}
+}
+const struct wp_image_description_v1_listener image_desc_listener = {
+	.failed = image_desc_handle_failed,
+	.ready = image_desc_handle_ready,
+	.ready2 = image_desc_handle_ready2,
+};
+
+static void create_forward_image_desc(
+		struct wl_resource *parent, struct wp_image_description_v1 *desc, uint32_t desc_id) {
+	struct wl_client *client = wl_resource_get_client(parent);
+	struct wl_resource *desc_resource = wl_resource_create(client,
+		&wp_image_description_v1_interface, wl_resource_get_version(parent),
+		desc_id);
+	if (desc_resource == NULL) {
+		wl_client_post_no_memory(client);
+		return;
+	}
+
+	struct forward_image_desc *fwd_desc = calloc(1, sizeof(*fwd_desc));
+	if (!fwd_desc) {
+		wl_client_post_no_memory(client);
+		return;
+	}
+	wl_list_init(&fwd_desc->committed_surfaces);
+	wl_list_init(&fwd_desc->pending_surfaces);
+	fwd_desc->resource = desc_resource;
+	fwd_desc->description = desc;
+
+	wp_image_description_v1_add_listener(fwd_desc->description,
+		&image_desc_listener, fwd_desc);
+	wl_resource_set_implementation(desc_resource, &image_desc_impl,
+		fwd_desc, image_desc_handle_resource_destroy);
+}
+static void create_output_image_desc(
+		struct wl_resource *parent, struct image_description_properties *state, uint32_t desc_id) {
+	struct wl_client *client = wl_resource_get_client(parent);
+	struct wl_resource *desc_resource = wl_resource_create(client,
+		&wp_image_description_v1_interface, wl_resource_get_version(parent),
+		desc_id);
+	if (desc_resource == NULL) {
+		wl_client_post_no_memory(client);
+		return;
+	}
+
+	struct forward_image_desc *fwd_desc = calloc(1, sizeof(*fwd_desc));
+	if (!fwd_desc) {
+		wl_client_post_no_memory(client);
+		return;
+	}
+	wl_list_init(&fwd_desc->committed_surfaces);
+	wl_list_init(&fwd_desc->pending_surfaces);
+	fwd_desc->resource = desc_resource;
+	fwd_desc->description = state->description;
+	fwd_desc->properties = state;
+	state->reference_count++;
+
+	wl_resource_set_implementation(desc_resource, &image_desc_impl,
+		fwd_desc, image_desc_handle_resource_destroy);
+
+	if (state->failed) {
+		wp_image_description_v1_send_failed(desc_resource, state->failure_cause, state->failure_reason);
+	} else if (wl_resource_get_version(parent) >= 2) {
+		assert(wl_proxy_get_version((struct wl_proxy *)state->description) >= 2);
+		wp_image_description_v1_send_ready2(desc_resource,
+			state->color_identity_v2_hi, state->color_identity_v2_lo);
+	} else {
+		if (wl_proxy_get_version((struct wl_proxy *)state->description) >= 2) {
+			wp_image_description_v1_send_ready(desc_resource,
+				color_identity_v2_to_v1(state->color_identity_v2_hi,
+					state->color_identity_v2_lo));
+		} else {
+			wp_image_description_v1_send_ready(desc_resource,
+				state->color_identity_v1);
+		}
+	}
+}
+
+static void desc_creator_icc_handle_resource_destroy(struct wl_resource *resource) {
+	assert(wl_resource_instance_of(resource, &wp_image_description_creator_icc_v1_interface, &desc_creator_icc_impl));
+	struct wp_image_description_creator_icc_v1* creator =
+		wl_resource_get_user_data(resource);
+	if (creator) {
+		wp_image_description_creator_icc_v1_destroy(creator);
+	}
+}
+static void nested_desc_creator_icc_create(struct wl_client *client,
+		struct wl_resource *resource, uint32_t image_description) {
+	struct wp_image_description_creator_icc_v1* creator =
+		wl_resource_get_user_data(resource);
+	create_forward_image_desc(resource,
+		wp_image_description_creator_icc_v1_create(creator),
+		image_description);
+	// ::create destroys the image creator
+	wl_resource_set_user_data(resource, NULL);
+}
+static void nested_desc_creator_icc_set_icc_file(struct wl_client *client,
+		struct wl_resource *resource, int32_t icc_profile, uint32_t offset, uint32_t length) {
+	struct wp_image_description_creator_icc_v1* creator =
+		wl_resource_get_user_data(resource);
+	assert(icc_profile >= 0);
+	wp_image_description_creator_icc_v1_set_icc_file(creator, icc_profile, offset, length);
+	close(icc_profile);
+}
+static const struct wp_image_description_creator_icc_v1_interface desc_creator_icc_impl = {
+	.create = nested_desc_creator_icc_create,
+	.set_icc_file = nested_desc_creator_icc_set_icc_file,
+};
+
+static void desc_creator_params_handle_resource_destroy(struct wl_resource *resource) {
+	assert(wl_resource_instance_of(resource, &wp_image_description_creator_params_v1_interface, &desc_creator_params_impl));
+	struct wp_image_description_creator_params_v1* creator =
+		wl_resource_get_user_data(resource);
+	if (creator) {
+		wp_image_description_creator_params_v1_destroy(creator);
+	}
+}
+static void nested_desc_creator_params_create(struct wl_client *client,
+		struct wl_resource *resource, uint32_t image_description) {
+	struct wp_image_description_creator_params_v1* creator =
+		wl_resource_get_user_data(resource);
+	create_forward_image_desc(resource,
+		wp_image_description_creator_params_v1_create(creator),
+		image_description);
+	// ::create destroys the image creator
+	wl_resource_set_user_data(resource, NULL);
+}
+static void nested_desc_creator_params_set_tf_named(struct wl_client *client,
+		struct wl_resource *resource, uint32_t tf) {
+	struct wp_image_description_creator_params_v1* creator =
+		wl_resource_get_user_data(resource);
+	wp_image_description_creator_params_v1_set_tf_named(creator, tf);
+}
+static void nested_desc_creator_params_set_tf_power(struct wl_client *client,
+		struct wl_resource *resource, uint32_t eexp) {
+	struct wp_image_description_creator_params_v1* creator =
+		wl_resource_get_user_data(resource);
+	wp_image_description_creator_params_v1_set_tf_power(creator, eexp);
+}
+static void nested_desc_creator_params_set_primaries_named(struct wl_client *client,
+		struct wl_resource *resource, uint32_t primaries) {
+	struct wp_image_description_creator_params_v1* creator =
+		wl_resource_get_user_data(resource);
+	wp_image_description_creator_params_v1_set_primaries_named(creator, primaries);
+}
+static void nested_desc_creator_params_set_primaries(struct wl_client *client,
+		struct wl_resource *resource, int32_t r_x, int32_t r_y, int32_t g_x,
+		int32_t g_y, int32_t b_x, int32_t b_y, int32_t w_x, int32_t w_y) {
+	struct wp_image_description_creator_params_v1* creator =
+		wl_resource_get_user_data(resource);
+	wp_image_description_creator_params_v1_set_primaries(creator,
+		r_x, r_y, g_x, g_y, b_x, b_y, w_x, w_y);
+}
+static void nested_desc_creator_params_set_luminances(struct wl_client *client,
+		struct wl_resource *resource, uint32_t min_lum, uint32_t max_lum,
+		uint32_t reference_lum) {
+	struct wp_image_description_creator_params_v1* creator =
+		wl_resource_get_user_data(resource);
+	wp_image_description_creator_params_v1_set_luminances(creator,
+		min_lum, max_lum, reference_lum);
+}
+static void nested_desc_creator_params_set_mastering_display_primaries(struct wl_client *client,
+		struct wl_resource *resource, int32_t r_x, int32_t r_y, int32_t g_x,
+		int32_t g_y, int32_t b_x, int32_t b_y, int32_t w_x, int32_t w_y) {
+	struct wp_image_description_creator_params_v1* creator =
+		wl_resource_get_user_data(resource);
+	wp_image_description_creator_params_v1_set_mastering_display_primaries(creator,
+		r_x, r_y, g_x, g_y, b_x, b_y, w_x, w_y);
+}
+static void nested_desc_creator_params_set_mastering_luminance(struct wl_client *client,
+		struct wl_resource *resource, uint32_t min_lum, uint32_t max_lum) {
+	struct wp_image_description_creator_params_v1* creator =
+		wl_resource_get_user_data(resource);
+	wp_image_description_creator_params_v1_set_mastering_luminance(creator,
+		min_lum, max_lum);
+
+}
+static void nested_desc_creator_params_set_max_cll(struct wl_client *client,
+		struct wl_resource *resource, uint32_t max_cll) {
+	struct wp_image_description_creator_params_v1* creator =
+		wl_resource_get_user_data(resource);
+	wp_image_description_creator_params_v1_set_max_cll(creator, max_cll);
+}
+static void nested_desc_creator_params_set_max_fall(struct wl_client *client,
+		struct wl_resource *resource, uint32_t max_fall) {
+	struct wp_image_description_creator_params_v1* creator =
+		wl_resource_get_user_data(resource);
+	wp_image_description_creator_params_v1_set_max_fall(creator, max_fall);
+
+}
+static const struct wp_image_description_creator_params_v1_interface desc_creator_params_impl = {
+	.create = nested_desc_creator_params_create,
+	.set_tf_named = nested_desc_creator_params_set_tf_named,
+	.set_tf_power = nested_desc_creator_params_set_tf_power,
+	.set_primaries_named = nested_desc_creator_params_set_primaries_named,
+	.set_primaries = nested_desc_creator_params_set_primaries,
+	.set_luminances = nested_desc_creator_params_set_luminances,
+	.set_mastering_display_primaries = nested_desc_creator_params_set_mastering_display_primaries,
+	.set_mastering_luminance = nested_desc_creator_params_set_mastering_luminance,
+	.set_max_cll = nested_desc_creator_params_set_max_fall,
+	.set_max_fall = nested_desc_creator_params_set_max_cll,
+};
+
+
+static void color_output_handle_resource_destroy(struct wl_resource *resource) {
+	/* remove resource from swaylock_surface's list of them (or if that has
+	 * been destroyed, from the stale list */
+	wl_list_remove(wl_resource_get_link(resource));
+}
+static void nested_color_output_destroy(struct wl_client *client,
+		struct wl_resource *resource) {
+	wl_resource_destroy(resource);
+}
+static void nested_color_output_get_image_description(struct wl_client *client,
+		struct wl_resource *resource, uint32_t image_description) {
+	struct swaylock_surface *surface = wl_resource_get_user_data(resource);
+	assert(surface->output_desc.current);
+	create_output_image_desc(resource, surface->output_desc.current, image_description);
+}
+static const struct wp_color_management_output_v1_interface color_output_impl = {
+	.destroy = nested_color_output_destroy,
+	.get_image_description = nested_color_output_get_image_description,
+};
+
+
+static void color_feedback_handle_resource_destroy(struct wl_resource *resource) {
+	/* remove resource from swaylock_surface's list of them (or from
+	 * the stale list, or from the forward_state list if this has no output */
+	wl_list_remove(wl_resource_get_link(resource));
+}
+static void nested_color_feedback_destroy(struct wl_client *client,
+		struct wl_resource *resource) {
+	wl_resource_destroy(resource);
+}
+static void nested_color_feedback_get_preferred(struct wl_client *client,
+		struct wl_resource *resource, uint32_t image_description) {
+	struct forward_surface *fwd_surface = wl_resource_get_user_data(resource);
+	struct swaylock_surface *surface = fwd_surface->sway_surface;
+
+	// If the surface has an associated output, use the output's color
+	// description; otherwise use the default parametric description
+	struct image_description_properties *props =
+		fwd_surface->state->desc_surface.current;
+	if (surface) {
+		assert(surface->output_desc.current);
+		if (!surface->output_desc.current->failed) {
+			props = surface->output_desc.current;
+		}
+	}
+
+	create_output_image_desc(resource, props, image_description);
+}
+static void nested_color_feedback_get_preferred_parameteric(struct wl_client *client,
+		struct wl_resource *resource, uint32_t image_description) {
+	struct forward_surface *fwd_surface = wl_resource_get_user_data(resource);
+	struct swaylock_surface *surface = fwd_surface->sway_surface;
+	// If the surface has an associated output and it has a parametric
+	// description, use the output's color description; otherwise use
+	// the default parametric description
+	struct image_description_properties *props =
+		fwd_surface->state->desc_surface.current;
+	if (surface) {
+		assert(surface->output_desc.current);
+		if (!surface->output_desc.current->failed &&
+				surface->output_desc.current->icc_profile == -1) {
+			props = surface->output_desc.current;
+		}
+	}
+
+	create_output_image_desc(resource, props, image_description);
+
+}
+static const struct wp_color_management_surface_feedback_v1_interface color_feedback_impl = {
+	.destroy = nested_color_feedback_destroy,
+	.get_preferred = nested_color_feedback_get_preferred,
+	.get_preferred_parametric = nested_color_feedback_get_preferred_parameteric,
+};
+
+
+static void nested_color_destroy(struct wl_client *client, struct wl_resource *resource) {
+	wl_resource_destroy(resource);
+}
+static void nested_color_get_output(struct wl_client *client,
+		struct wl_resource *resource, uint32_t id, struct wl_resource *output) {
+	struct swaylock_surface *surface = wl_resource_get_user_data(output);
+
+	struct wl_resource *output_resource = wl_resource_create(client,
+		 &wp_color_management_output_v1_interface, wl_resource_get_version(resource), id);
+	if (output_resource == NULL) {
+		wl_client_post_no_memory(client);
+		return;
+	}
+
+	wl_resource_set_implementation(output_resource, &color_output_impl,
+		surface, color_output_handle_resource_destroy);
+	wl_list_insert(&surface->nested_server_color_output_resources,
+		wl_resource_get_link(output_resource));
+}
+static void nested_color_get_surface(struct wl_client *client,
+		struct wl_resource *resource, uint32_t id, struct wl_resource *surface) {
+	struct forward_surface *forward_surf = wl_resource_get_user_data(surface);
+	/* Each surface has at most one wp_color_representation_surface_v1 associated */
+	if (forward_surf->color_surface) {
+		wl_resource_post_error(resource, WP_COLOR_MANAGER_V1_ERROR_SURFACE_EXISTS,
+			"color management surface already exists");
+	}
+
+	struct wl_resource *surface_resource = wl_resource_create(client,
+		 &wp_color_management_surface_v1_interface, wl_resource_get_version(resource), id);
+	if (surface_resource == NULL) {
+		wl_client_post_no_memory(client);
+		return;
+	}
+	struct forward_surface *surf = wl_resource_get_user_data(surface);
+	surf->color_surface = surface_resource;
+
+	wl_resource_set_implementation(surface_resource, &color_surface_impl,
+		surf, color_surface_handle_resource_destroy);
+}
+static void nested_color_get_surface_feedback(struct wl_client *client,
+		struct wl_resource *resource, uint32_t id, struct wl_resource *surface) {
+	struct forward_state *state = wl_resource_get_user_data(resource);
+	struct forward_surface *fwd_surface = wl_resource_get_user_data(surface);
+
+	struct wl_resource *feedback_resource = wl_resource_create(client,
+		&wp_color_management_surface_feedback_v1_interface,
+		wl_resource_get_version(resource), id);
+	if (feedback_resource == NULL) {
+		wl_client_post_no_memory(client);
+		return;
+	}
+
+	wl_resource_set_implementation(feedback_resource, &color_feedback_impl,
+		fwd_surface, color_feedback_handle_resource_destroy);
+	wl_list_insert(&state->color_feedback_resources,
+		wl_resource_get_link(feedback_resource));
+}
+static void nested_color_create_icc_creator(struct wl_client *client,
+		struct wl_resource *resource, uint32_t obj) {
+	struct wl_resource *creator_resource = wl_resource_create(client,
+		&wp_image_description_creator_icc_v1_interface,
+		wl_resource_get_version(resource), obj);
+	if (creator_resource == NULL) {
+		wl_client_post_no_memory(client);
+		return;
+	}
+
+	struct forward_state *state = wl_resource_get_user_data(resource);
+	struct wp_image_description_creator_icc_v1 *creator =
+		wp_color_manager_v1_create_icc_creator(state->color_management);
+
+	wl_resource_set_implementation(creator_resource, &desc_creator_icc_impl,
+		creator, desc_creator_icc_handle_resource_destroy);
+}
+static void nested_color_create_parametric_creator(struct wl_client *client,
+		struct wl_resource *resource, uint32_t obj) {
+	struct wl_resource *creator_resource = wl_resource_create(client,
+		&wp_image_description_creator_params_v1_interface,
+		wl_resource_get_version(resource), obj);
+	if (creator_resource == NULL) {
+		wl_client_post_no_memory(client);
+		return;
+	}
+
+	struct forward_state *state = wl_resource_get_user_data(resource);
+	struct wp_image_description_creator_params_v1 *creator =
+		wp_color_manager_v1_create_parametric_creator(state->color_management);
+
+	wl_resource_set_implementation(creator_resource, &desc_creator_params_impl,
+		creator, desc_creator_params_handle_resource_destroy);
+}
+static void nested_color_create_windows_scrgb(struct wl_client *client,
+		struct wl_resource *resource, uint32_t image_description) {
+	struct forward_state *state = wl_resource_get_user_data(resource);
+	create_forward_image_desc(resource,
+		wp_color_manager_v1_create_windows_scrgb(state->color_management),
+		image_description);
+}
+static void nested_color_get_image_description(struct wl_client *client,
+		struct wl_resource *resource, uint32_t image_description,
+		struct wl_resource *reference) {
+	// Currently no protocols are supported that could produce
+	// image description references
+	wl_resource_post_error(resource, WP_COLOR_MANAGER_V1_ERROR_UNSUPPORTED_FEATURE,
+		"no legitimate source of references for get_image_description");
+}
+static const struct wp_color_manager_v1_interface color_mgr_impl = {
+	.create_icc_creator = nested_color_create_icc_creator,
+	.create_parametric_creator = nested_color_create_parametric_creator,
+	.create_windows_scrgb = nested_color_create_windows_scrgb,
+	.destroy = nested_color_destroy,
+	.get_image_description = nested_color_get_image_description,
+	.get_output = nested_color_get_output,
+	.get_surface = nested_color_get_surface,
+	.get_surface_feedback = nested_color_get_surface_feedback,
+};
+
+void bind_color_manager(struct wl_client *client, void *data,
+	uint32_t version, uint32_t id) {
+	struct wl_resource *resource =
+			wl_resource_create(client, &wp_color_manager_v1_interface, version, id);
+	if (resource == NULL) {
+		wl_client_post_no_memory(client);
+		return;
+	}
+	wl_resource_set_implementation(resource, &color_mgr_impl, data, NULL);
+	struct forward_state *state = data;
+	for (size_t i = 0; i < state->supported_intents_len; i++) {
+		if (!(version >= WP_COLOR_MANAGER_V1_RENDER_INTENT_ABSOLUTE_NO_ADAPTATION_SINCE_VERSION)
+				&& state->supported_intents[i] == WP_COLOR_MANAGER_V1_RENDER_INTENT_ABSOLUTE_NO_ADAPTATION) {
+			return;
+		}
+		wp_color_manager_v1_send_supported_intent(
+			resource, state->supported_intents[i]);
+	}
+	for (size_t i = 0; i < state->supported_features_len; i++) {
+		wp_color_manager_v1_send_supported_feature(
+			resource, state->supported_features[i]);
+	}
+	for (size_t i = 0; i < state->supported_tfs_len; i++) {
+		uint32_t tf = state->supported_tfs[i];
+		if (!(version >= WP_COLOR_MANAGER_V1_TRANSFER_FUNCTION_COMPOUND_POWER_2_4_SINCE_VERSION)
+				&& state->supported_tfs[i] == WP_COLOR_MANAGER_V1_TRANSFER_FUNCTION_COMPOUND_POWER_2_4) {
+			tf = WP_COLOR_MANAGER_V1_TRANSFER_FUNCTION_SRGB;
+		}
+		wp_color_manager_v1_send_supported_tf_named(
+			resource, tf);
+	}
+	for (size_t i = 0; i < state->supported_primaries_len; i++) {
+		wp_color_manager_v1_send_supported_primaries_named(
+			resource, state->supported_primaries[i]);
+	}
+	wp_color_manager_v1_send_done(resource);
+}
+
+static void color_rep_handle_resource_destroy(struct wl_resource *resource) {
+	assert(wl_resource_instance_of(resource,
+		&wp_color_representation_surface_v1_interface, &color_rep_surface_impl));
+	struct forward_surface *fwd_surface = wl_resource_get_user_data(resource);
+	if (fwd_surface) {
+		// Destroying the surface also resets the pending color representation state
+		fwd_surface->pending.has_alpha_mode = false;
+		fwd_surface->pending.alpha_mode = 0;
+		fwd_surface->pending.has_coef_range = false;
+		fwd_surface->pending.coefficients = 0;
+		fwd_surface->pending.range = 0;
+		fwd_surface->pending.has_chroma_location = false;
+		fwd_surface->pending.chroma_location = 0;
+		assert(fwd_surface->color_representation == resource);
+		fwd_surface->color_representation = NULL;
+	}
+}
+static void nested_color_rep_surface_destroy(struct wl_client *client,
+		struct wl_resource *resource) {
+	wl_resource_destroy(resource);
+}
+static void nested_color_rep_surface_set_alpha_mode(struct wl_client *client,
+		struct wl_resource *resource, uint32_t alpha_mode) {
+	struct forward_surface *fwd_surface = wl_resource_get_user_data(resource);
+	if (!fwd_surface) {
+		return;
+	}
+	fwd_surface->pending.has_alpha_mode = true;
+	fwd_surface->pending.alpha_mode = alpha_mode;
+}
+static void nested_color_rep_surface_set_coefficients_and_range(struct wl_client *client,
+		struct wl_resource *resource, uint32_t coefficients, uint32_t range) {
+	struct forward_surface *fwd_surface = wl_resource_get_user_data(resource);
+	if (!fwd_surface) {
+		return;
+	}
+	fwd_surface->pending.has_coef_range = true;
+	fwd_surface->pending.coefficients = coefficients;
+	fwd_surface->pending.range = range;
+}
+static void nested_color_rep_surface_set_chroma_location(struct wl_client *client,
+		struct wl_resource *resource, uint32_t chroma_location) {
+	struct forward_surface *fwd_surface = wl_resource_get_user_data(resource);
+	if (!fwd_surface) {
+		return;
+	}
+	fwd_surface->pending.has_chroma_location = true;
+	fwd_surface->pending.chroma_location = chroma_location;
+}
+static const struct wp_color_representation_surface_v1_interface color_rep_surface_impl = {
+	.destroy = nested_color_rep_surface_destroy,
+	.set_alpha_mode = nested_color_rep_surface_set_alpha_mode,
+	.set_chroma_location = nested_color_rep_surface_set_chroma_location,
+	.set_coefficients_and_range = nested_color_rep_surface_set_coefficients_and_range,
+};
+
+static void nested_color_rep_destroy(struct wl_client *client,
+		struct wl_resource *resource) {
+	wl_resource_destroy(resource);
+}
+static void nested_color_rep_get_surface(struct wl_client *client,
+		struct wl_resource *resource, uint32_t id, struct wl_resource *surface) {
+	struct forward_surface *forward_surf = wl_resource_get_user_data(surface);
+	/* Each surface has at most one wp_color_representation_surface_v1 associated */
+	if (forward_surf->color_representation) {
+		wl_resource_post_error(resource, WP_COLOR_REPRESENTATION_MANAGER_V1_ERROR_SURFACE_EXISTS,
+			"color representation already exists");
+	}
+
+	struct wl_resource *surface_resource = wl_resource_create(client,
+		 &wp_color_representation_surface_v1_interface, wl_resource_get_version(resource), id);
+	if (surface_resource == NULL) {
+		wl_client_post_no_memory(client);
+		return;
+	}
+	struct forward_surface *surf = wl_resource_get_user_data(surface);
+	surf->color_representation = surface_resource;
+
+	wl_resource_set_implementation(surface_resource, &color_rep_surface_impl,
+		surf, color_rep_handle_resource_destroy);
+}
+static const struct wp_color_representation_manager_v1_interface color_rep_impl = {
+	.destroy = nested_color_rep_destroy,
+	.get_surface = nested_color_rep_get_surface,
+};
+
+void bind_color_representation_manager(struct wl_client *client, void *data,
+	uint32_t version, uint32_t id) {
+	struct wl_resource *resource =
+			wl_resource_create(client, &wp_color_representation_manager_v1_interface, version, id);
+	if (resource == NULL) {
+		wl_client_post_no_memory(client);
+		return;
+	}
+	wl_resource_set_implementation(resource, &color_rep_impl, data, NULL);
+	struct forward_state *state = data;
+	for (size_t i = 0; i < state->alpha_modes_len; i++) {
+		wp_color_representation_manager_v1_send_supported_alpha_mode(
+			resource, state->alpha_modes[i]);
+	}
+	for (size_t i = 0; i < state->coef_range_pairs_len; i++) {
+		wp_color_representation_manager_v1_send_supported_coefficients_and_ranges(
+			resource, state->coef_range_pairs[i].coefficients,
+			state->coef_range_pairs[i].range);
+	}
+	wp_color_representation_manager_v1_send_done(resource);
+}
+
 
 
 static void nested_data_source_offer(struct wl_client *client, struct wl_resource *resource,

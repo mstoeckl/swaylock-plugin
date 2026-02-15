@@ -165,6 +165,10 @@ static void destroy_surface(struct swaylock_surface *surface) {
 			wl_list_remove(wl_resource_get_link(output));
 			wl_list_insert(&state->stale_wl_output_resources, wl_resource_get_link(output));
 		}
+		wl_resource_for_each_safe(output, tmp, &surface->nested_server_color_output_resources) {
+			wl_list_remove(wl_resource_get_link(output));
+			wl_list_insert(&state->stale_color_output_resources, wl_resource_get_link(output));
+		}
 	}
 	if (surface->client_submission_timer) {
 		loop_remove_timer(state->eventloop, surface->client_submission_timer);
@@ -174,6 +178,12 @@ static void destroy_surface(struct swaylock_surface *surface) {
 	}
 	if (surface->fractional_scale) {
 		wp_fractional_scale_v1_destroy(surface->fractional_scale);
+	}
+	if (surface->color_rep_surface) {
+		wp_color_representation_surface_v1_destroy(surface->color_rep_surface);
+	}
+	if (surface->color_surface) {
+		wp_color_management_surface_v1_destroy(surface->color_surface);
 	}
 	if (surface->viewport) {
 		wp_viewport_destroy(surface->viewport);
@@ -211,7 +221,7 @@ static void fract_scale_preferred_scale(void *data, struct wp_fractional_scale_v
 	}
 }
 
-static const struct wp_fractional_scale_v1_listener  fract_scale_listener = {
+static const struct wp_fractional_scale_v1_listener fract_scale_listener = {
 	.preferred_scale = fract_scale_preferred_scale,
 };
 
@@ -264,6 +274,23 @@ static void create_surface(struct swaylock_surface *surface) {
 	if (state->forward.viewporter) {
 		surface->viewport = wp_viewporter_get_viewport(state->forward.viewporter, surface->surface);
 		assert(surface->viewport);
+	}
+
+	if (state->forward.color_representation) {
+		surface->color_rep_surface = wp_color_representation_manager_v1_get_surface(
+			state->forward.color_representation, surface->surface);
+		assert(surface->color_rep_surface);
+	}
+
+	if (state->forward.color_management) {
+		surface->color_surface = wp_color_manager_v1_get_surface(
+			state->forward.color_management, surface->surface);
+		assert(surface->color_surface);
+		// TODO: also eagerly create a wp_color_management_surface_feedback_v1
+		// in case a plugin client later requests surface feedback, and having
+		// the specific output already known improves the feedback hint. This
+		// would require significant refactoring to ensure the information is
+		// received before the client asks for it.
 	}
 
 	// Plugin should provide a surface quickly enough, after compositor
@@ -377,6 +404,42 @@ void damage_state(struct swaylock_state *state) {
 	}
 }
 
+static void setup_color_management_for_surface(struct swaylock_surface *surface) {
+	surface->color_output = wp_color_manager_v1_get_output(
+		surface->state->forward.color_management, surface->output);
+	wp_color_management_output_v1_add_listener(surface->color_output,
+		&color_output_listener, surface);
+	surface->output_desc.surface = surface;
+	surface->output_desc.pending = create_image_description_props();
+	surface->output_desc.pending->description =
+		wp_color_management_output_v1_get_image_description(
+			surface->color_output);
+	wp_image_description_v1_add_listener(surface->output_desc.pending->description,
+		&image_output_desc_listener, &surface->output_desc);
+}
+
+void init_surface_if_ready(struct swaylock_surface *surface) {
+	if (surface->created || !surface->state->run_display) {
+		return;
+	}
+	if (!surface->has_output_done) {
+		// The first wl_output::done needs to have arrived, so that there
+		// is enough information to pass to the plugin clients
+		return;
+	}
+	if (surface->color_output) {
+		// If color management is used, also need to have the complete color output
+		// available, for which the protocol unfortunately requires more roundtrips
+		// than necessary.
+		if (!surface->output_desc.current) {
+			return;
+		}
+		assert(surface->output_desc.current->description);
+	}
+
+	create_surface(surface);
+}
+
 static void handle_wl_output_geometry(void *data, struct wl_output *wl_output,
 		int32_t x, int32_t y, int32_t width_mm, int32_t height_mm,
 		int32_t subpixel, const char *make, const char *model,
@@ -403,14 +466,8 @@ static void handle_wl_output_mode(void *data, struct wl_output *output,
 
 static void handle_wl_output_done(void *data, struct wl_output *output) {
 	struct swaylock_surface *surface = data;
-	if (!surface->created && surface->state->run_display) {
-		if (!surface->output_name || !surface->output_description) {
-			swaylock_log(LOG_ERROR, "wl_output::done received, but no name/desription pair yet. Delaying surface creation until these arrived.");
-			return;
-		}
-
-		create_surface(surface);
-	}
+	surface->has_output_done = true;
+	init_surface_if_ready(surface);
 }
 
 static void handle_wl_output_scale(void *data, struct wl_output *output,
@@ -463,143 +520,6 @@ static const struct ext_session_lock_v1_listener ext_session_lock_v1_listener = 
 	.finished = ext_session_lock_v1_handle_finished,
 };
 
-
-static void wl_shm_handle_format(void *data, struct wl_shm *wl_shm, uint32_t format) {
-	struct forward_state *forward = data;
-	uint32_t *new_fmts = realloc(forward->shm_formats, sizeof(uint32_t) * (forward->shm_formats_len + 1));
-	if (new_fmts) {
-		forward->shm_formats = new_fmts;
-		forward->shm_formats[forward->shm_formats_len] = format;
-		forward->shm_formats_len++;
-	}
-
-}
-
-static const struct wl_shm_listener shm_listener = {
-	.format = wl_shm_handle_format,
-};
-
-static void linux_dmabuf_handle_format(void *data, struct zwp_linux_dmabuf_v1 *linux_dmabuf,
-		uint32_t format) {
-	/* ignore, can be reconstructed from modifier list */
-}
-
-static void linux_dmabuf_handle_modifier(void *data, struct zwp_linux_dmabuf_v1 *linux_dmabuf,
-		uint32_t format, uint32_t modifier_hi, uint32_t modifier_lo) {
-	/* ignore, can be reconstructed from modifier list */
-	struct forward_state *forward = data;
-	// todo: quadratic runtime, fix. also sort these?
-	struct dmabuf_modifier_pair *new_fmts = realloc(forward->dmabuf_formats, sizeof(struct dmabuf_modifier_pair) * (forward->dmabuf_formats_len + 1));
-	if (new_fmts) {
-		forward->dmabuf_formats = new_fmts;
-		forward->dmabuf_formats[forward->dmabuf_formats_len].format = format;
-		forward->dmabuf_formats[forward->dmabuf_formats_len].modifier_lo = modifier_lo;
-		forward->dmabuf_formats[forward->dmabuf_formats_len].modifier_hi = modifier_hi;
-		forward->dmabuf_formats_len++;
-	}
-}
-
-static const struct zwp_linux_dmabuf_v1_listener linux_dmabuf_listener = {
-	.format = linux_dmabuf_handle_format,
-	.modifier = linux_dmabuf_handle_modifier,
-};
-
-static void dmabuf_feedback_done(void *data,
-		struct zwp_linux_dmabuf_feedback_v1 *zwp_linux_dmabuf_feedback_v1) {
-	/* cleanup outdated tranches */
-	struct forward_state *forward = data;
-	for (size_t i = 0; i < forward->current.tranches_len; i++) {
-		wl_array_release(&forward->current.tranches[i].indices);
-	}
-	free(forward->current.tranches);
-	if (forward->current.table_fd != -1) {
-		close(forward->current.table_fd);
-	}
-
-	forward->current = forward->pending;
-
-	/* reset pending, keeping last main_device/table_fd values */
-	forward->pending.tranches = NULL;
-	forward->pending.tranches_len = 0;
-	if (forward->current.table_fd != -1) {
-		forward->pending.table_fd = dup(forward->current.table_fd);
-		if (!set_cloexec(forward->pending.table_fd)) {
-			swaylock_log(LOG_ERROR, "Failed to set cloexec for dmabuf fd");
-		}
-	}
-
-	/* notify all the client's feedback objects */
-	struct wl_resource *resource;
-	wl_resource_for_each(resource, &forward->feedback_instances) {
-		send_dmabuf_feedback_data(resource, &forward->current);
-	}
-}
-static void dmabuf_feedback_format_table(void *data,
-		struct zwp_linux_dmabuf_feedback_v1 *zwp_linux_dmabuf_feedback_v1,
-		int32_t fd, uint32_t size) {
-	struct forward_state *forward = data;
-	if (forward->pending.table_fd != -1) {
-		close(forward->pending.table_fd);
-	}
-	forward->pending.table_fd  = fd;
-	forward->pending.table_fd_size = size;
-}
-static void dmabuf_feedback_main_device(void *data,
-		struct zwp_linux_dmabuf_feedback_v1 *zwp_linux_dmabuf_feedback_v1,
-		struct wl_array *device) {
-	struct forward_state *forward = data;
-	memcpy(&forward->pending.main_device, device->data, sizeof(forward->pending.main_device));
-
-}
-static void dmabuf_feedback_tranche_done(void *data,
-		struct zwp_linux_dmabuf_feedback_v1 *zwp_linux_dmabuf_feedback_v1) {
-	struct forward_state *forward = data;
-	struct feedback_tranche  *new_tranches = realloc(forward->pending.tranches, sizeof(struct feedback_tranche) * (forward->pending.tranches_len + 1));
-	if (!new_tranches) {
-		swaylock_log(LOG_ERROR, "failed to expand tranche list");
-		return;
-	}
-
-	forward->pending.tranches = new_tranches;
-	forward->pending.tranches[forward->pending.tranches_len] = forward->pending_tranche;
-	forward->pending.tranches_len++;
-	/* reset the pending tranche state */
-	memset(&forward->pending_tranche.tranche_device, 0, sizeof(dev_t));
-	wl_array_init(&forward->pending_tranche.indices);
-	forward->pending_tranche.flags = 0;
-}
-
-static void dmabuf_feedback_tranche_target_device(void *data,
-		struct zwp_linux_dmabuf_feedback_v1 *zwp_linux_dmabuf_feedback_v1,
-		struct wl_array *device) {
-	struct forward_state *forward = data;
-	memcpy(&forward->pending_tranche.tranche_device, device->data, sizeof(forward->pending_tranche.tranche_device));
-}
-
-static void dmabuf_feedback_tranche_formats(void *data,
-		struct zwp_linux_dmabuf_feedback_v1 *zwp_linux_dmabuf_feedback_v1,
-		struct wl_array *indices) {
-	struct forward_state *forward = data;
-	if (wl_array_copy(&forward->pending_tranche.indices, indices) == -1) {
-		swaylock_log(LOG_ERROR, "failed to copy tranche format list");
-	}
-}
-static void dmabuf_feedback_tranche_flags(void *data,
-		struct zwp_linux_dmabuf_feedback_v1 *zwp_linux_dmabuf_feedback_v1,
-		uint32_t flags) {
-	struct forward_state *forward = data;
-	forward->pending_tranche.flags = flags;
-}
-
-static const struct zwp_linux_dmabuf_feedback_v1_listener dmabuf_feedback_listener = {
-	.done = dmabuf_feedback_done,
-	.format_table = dmabuf_feedback_format_table,
-	.main_device = dmabuf_feedback_main_device,
-	.tranche_done = dmabuf_feedback_tranche_done,
-	.tranche_target_device = dmabuf_feedback_tranche_target_device,
-	.tranche_formats = dmabuf_feedback_tranche_formats,
-	.tranche_flags = dmabuf_feedback_tranche_flags,
-};
 
 static void handle_global(void *data, struct wl_registry *registry,
 		uint32_t name, const char *interface, uint32_t version) {
@@ -654,8 +574,13 @@ static void handle_global(void *data, struct wl_registry *registry,
 		wl_output_add_listener(surface->output, &_wl_output_listener, surface);
 		wl_list_insert(&state->surfaces, &surface->link);
 
+		if (state->forward.color_management) {
+			setup_color_management_for_surface(surface);
+		}
+
 		wl_list_init(&surface->nested_server_wl_output_resources);
 		wl_list_init(&surface->nested_server_xdg_output_resources);
+		wl_list_init(&surface->nested_server_color_output_resources);
 	} else if (strcmp(interface, ext_session_lock_manager_v1_interface.name) == 0) {
 		state->ext_session_lock_manager_v1 = wl_registry_bind(registry, name,
 				&ext_session_lock_manager_v1_interface, 1);
@@ -665,6 +590,27 @@ static void handle_global(void *data, struct wl_registry *registry,
 	} else if (strcmp(interface, wp_viewporter_interface.name) == 0) {
 		state->forward.viewporter = wl_registry_bind(registry, name,
 			&wp_viewporter_interface, version >= 1 ? 1 : version);
+	} else if (strcmp(interface, wp_color_manager_v1_interface.name) == 0) {
+		assert(!state->forward.color_management); // only expected once
+
+		state->forward.color_manager_version = version >= 2 ? 2 : version;
+		state->forward.color_management = wl_registry_bind(registry, name,
+			&wp_color_manager_v1_interface, state->forward.color_manager_version);
+		wp_color_manager_v1_add_listener(state->forward.color_management,
+			&color_manager_listener, &state->forward);
+
+		// Bind color output for any wl_outputs bound before
+		struct swaylock_surface *surface;
+		wl_list_for_each(surface, &state->surfaces, link) {
+			assert(!surface->color_output);
+			setup_color_management_for_surface(surface);
+		}
+
+	} else if (strcmp(interface, wp_color_representation_manager_v1_interface.name) == 0) {
+		state->forward.color_representation = wl_registry_bind(registry, name,
+			&wp_color_representation_manager_v1_interface, version >= 1 ? 1 : version);
+		wp_color_representation_manager_v1_add_listener(state->forward.color_representation,
+			&color_representation_manager_listener, &state->forward);
 	}
 }
 
@@ -1515,7 +1461,8 @@ static void dispatch_nested(int fd, short mask, void *data) {
 }
 
 static void xdg_output_destroy_func(struct wl_resource *resource) {
-	/* remove xdg output resource from surface's list of them */
+	/* remove xdg output resource from surface's list of them (or if surface
+	 * is gone, from the stale list */
 	wl_list_remove(wl_resource_get_link(resource));
 }
 
@@ -1547,7 +1494,9 @@ static void xdg_output_manager_get_xdg_output(struct wl_client *client,
 	// todo: how should scale/etc affect this
 	zxdg_output_v1_send_logical_size(output_resource, surface->width, surface->height);
 	zxdg_output_v1_send_name(output_resource, surface->output_name);
-	zxdg_output_v1_send_description(output_resource, surface->output_description);
+	if (surface->output_description) {
+		zxdg_output_v1_send_description(output_resource, surface->output_description);
+	}
 	zxdg_output_v1_send_done(output_resource);
 }
 static void xdg_output_manager_destroy(struct wl_client *client, struct wl_resource *resource) {
@@ -1605,7 +1554,10 @@ static void bind_wl_output(struct wl_client *client, void *data,
 
 	if (version >= 4) {
 		wl_output_send_name(resource, surface->output_name);
-		wl_output_send_description(resource, surface->output_description);
+		if (surface->output_description) {
+			// Description is optional
+			wl_output_send_description(resource, surface->output_description);
+		}
 	}
 	wl_output_send_done(resource);
 }
@@ -2442,6 +2394,7 @@ int main(int argc, char **argv) {
 	wl_list_init(&state.stale_wl_output_resources);
 	wl_list_init(&state.stale_xdg_output_resources);
 	wl_list_init(&state.server.clients);
+	wl_list_init(&state.forward.color_feedback_resources);
 
 	// Create the downstream display now, so that per-output plugin commands
 	// launched on upstream output receipt have something to connect to.
@@ -2477,6 +2430,23 @@ int main(int argc, char **argv) {
 	state.ext_session_lock_v1 = ext_session_lock_manager_v1_lock(state.ext_session_lock_manager_v1);
 	ext_session_lock_v1_add_listener(state.ext_session_lock_v1,
 			&ext_session_lock_v1_listener, &state);
+
+	if (state.forward.color_management) {
+		// Will eventually need an upstream implementation
+		state.forward.test_surface = wl_compositor_create_surface(state.compositor);
+		state.forward.test_feedback = wp_color_manager_v1_get_surface_feedback(
+			state.forward.color_management, state.forward.test_surface);
+		wp_color_management_surface_feedback_v1_add_listener(state.forward.test_feedback,
+			&color_surface_feedback_listener, &state.forward);
+		state.forward.desc_surface.state = &state;
+		state.forward.desc_surface.pending = create_image_description_props();
+		state.forward.desc_surface.pending->description =
+			wp_color_management_surface_feedback_v1_get_preferred_parametric(
+				state.forward.test_feedback);
+		wp_image_description_v1_add_listener(state.forward.desc_surface.pending->description,
+			&image_output_desc_listener, &state.forward.desc_surface);
+
+	}
 
 	// Roundtrip to receive information from globals (like wl_seat, wl_shm, etc.)
 	if (wl_display_roundtrip(state.display) == -1) {
@@ -2551,6 +2521,18 @@ int main(int argc, char **argv) {
 	if (state.forward.viewporter) {
 		state.server.wp_viewporter = wl_global_create(state.server.display,
 			&wp_viewporter_interface, 1, &state.forward, bind_viewporter);
+	}
+	if (state.forward.color_management) {
+		assert(state.forward.color_management_done);
+		state.server.wp_color_manager = wl_global_create(state.server.display,
+			&wp_color_manager_v1_interface, state.forward.color_manager_version,
+			&state.forward, bind_color_manager);
+	}
+	if (state.forward.color_representation) {
+		assert(state.forward.color_representation_done);
+		state.server.wp_color_representation_manager = wl_global_create(state.server.display,
+			&wp_color_representation_manager_v1_interface, 1,
+			&state.forward, bind_color_representation_manager);
 	}
 	state.server.loop = wl_display_get_event_loop(state.server.display);
 

@@ -116,20 +116,8 @@ static void destroy_surface(struct swaylock_surface *surface) {
 
 static const struct ext_session_lock_surface_v1_listener ext_session_lock_surface_v1_listener;
 
-static cairo_surface_t *select_image(struct swaylock_state *state,
-		struct swaylock_surface *surface);
-
-static bool surface_is_opaque(struct swaylock_surface *surface) {
-	if (surface->image) {
-		return cairo_surface_get_content(surface->image) == CAIRO_CONTENT_COLOR;
-	}
-	return (surface->state->args.colors.background & 0xff) == 0xff;
-}
-
 static void create_surface(struct swaylock_surface *surface) {
 	struct swaylock_state *state = surface->state;
-
-	surface->image = select_image(state, surface);
 
 	surface->surface = wl_compositor_create_surface(state->compositor);
 	assert(surface->surface);
@@ -144,18 +132,6 @@ static void create_surface(struct swaylock_surface *surface) {
 		state->ext_session_lock_v1, surface->surface, surface->output);
 	ext_session_lock_surface_v1_add_listener(surface->ext_session_lock_surface_v1,
 		&ext_session_lock_surface_v1_listener, surface);
-
-	if (surface_is_opaque(surface) &&
-			surface->state->args.mode != BACKGROUND_MODE_CENTER &&
-			surface->state->args.mode != BACKGROUND_MODE_FIT) {
-		struct wl_region *region =
-			wl_compositor_create_region(surface->state->compositor);
-		wl_region_add(region, 0, 0, INT32_MAX, INT32_MAX);
-		wl_surface_set_opaque_region(surface->surface, region);
-		wl_region_destroy(region);
-	}
-
-	surface->created = true;
 }
 
 static void ext_session_lock_surface_v1_handle_configure(void *data,
@@ -199,10 +175,7 @@ static void handle_wl_output_mode(void *data, struct wl_output *output,
 }
 
 static void handle_wl_output_done(void *data, struct wl_output *output) {
-	struct swaylock_surface *surface = data;
-	if (!surface->created && surface->state->run_display) {
-		create_surface(surface);
-	}
+	// Who cares
 }
 
 static void handle_wl_output_scale(void *data, struct wl_output *output,
@@ -219,6 +192,10 @@ static void handle_wl_output_name(void *data, struct wl_output *output,
 		const char *name) {
 	struct swaylock_surface *surface = data;
 	surface->output_name = strdup(name);
+	if (surface->state->run_display) {
+		surface->dirty = true;
+		render(surface);
+	}
 }
 
 static void handle_wl_output_description(void *data, struct wl_output *output,
@@ -279,6 +256,11 @@ static void handle_global(void *data, struct wl_registry *registry,
 		surface->output_global_name = name;
 		wl_output_add_listener(surface->output, &_wl_output_listener, surface);
 		wl_list_insert(&state->surfaces, &surface->link);
+
+		if (surface->state->run_display) {
+			// Output added after initial set of globals
+			create_surface(surface);
+		}
 	} else if (strcmp(interface, ext_session_lock_manager_v1_interface.name) == 0) {
 		state->ext_session_lock_manager_v1 = wl_registry_bind(registry, name,
 				&ext_session_lock_manager_v1_interface, 1);
@@ -306,20 +288,6 @@ static int sigusr_fds[2] = {-1, -1};
 
 void do_sigusr(int sig) {
 	(void)write(sigusr_fds[1], "1", 1);
-}
-
-static cairo_surface_t *select_image(struct swaylock_state *state,
-		struct swaylock_surface *surface) {
-	struct swaylock_image *image;
-	cairo_surface_t *default_image = NULL;
-	wl_list_for_each(image, &state->images, link) {
-		if (lenient_strcmp(image->output_name, surface->output_name) == 0) {
-			return image->cairo_surface;
-		} else if (!image->output_name) {
-			default_image = image->cairo_surface;
-		}
-	}
-	return default_image;
 }
 
 static char *join_args(char **argv, int argc) {

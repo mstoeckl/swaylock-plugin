@@ -47,6 +47,42 @@ static const struct wl_callback_listener surface_frame_listener = {
 	.done = surface_frame_handle_done,
 };
 
+static cairo_surface_t *select_image(struct swaylock_state *state,
+		struct swaylock_surface *surface) {
+	struct swaylock_image *image;
+	cairo_surface_t *default_image = NULL;
+	wl_list_for_each(image, &state->images, link) {
+		if (lenient_strcmp(image->output_name, surface->output_name) == 0) {
+			return image->cairo_surface;
+		} else if (!image->output_name) {
+			default_image = image->cairo_surface;
+		}
+	}
+	return default_image;
+}
+
+static bool surface_is_opaque(struct swaylock_surface *surface) {
+	if (surface->image) {
+		return cairo_surface_get_content(surface->image) == CAIRO_CONTENT_COLOR;
+	}
+	return (surface->state->args.colors.background & 0xff) == 0xff;
+}
+
+static void setup_image(struct swaylock_surface *surface) {
+	surface->image_selected = true;
+	surface->image = select_image(surface->state, surface);
+
+	if (surface_is_opaque(surface) &&
+			surface->state->args.mode != BACKGROUND_MODE_CENTER &&
+			surface->state->args.mode != BACKGROUND_MODE_FIT) {
+		struct wl_region *region =
+			wl_compositor_create_region(surface->state->compositor);
+		wl_region_add(region, 0, 0, INT32_MAX, INT32_MAX);
+		wl_surface_set_opaque_region(surface->surface, region);
+		wl_region_destroy(region);
+	}
+}
+
 static bool render_frame(struct swaylock_surface *surface);
 
 void render(struct swaylock_surface *surface) {
@@ -57,10 +93,17 @@ void render(struct swaylock_surface *surface) {
 	if (buffer_width == 0 || buffer_height == 0) {
 		return; // not yet configured
 	}
+	if (!surface->output_name) {
+		return; // output not yet identified, needed to choose image for first frame
+	}
 
 	if (!surface->dirty || surface->frame) {
 		// Nothing to do or frame already pending
 		return;
+	}
+
+	if (!surface->image_selected) {
+		setup_image(surface);
 	}
 
 	bool need_destroy = false;

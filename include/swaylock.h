@@ -103,6 +103,7 @@ struct swaylock_state {
 };
 
 struct swaylock_surface {
+	bool image_selected;
 	cairo_surface_t *image;
 	struct swaylock_state *state;
 	struct wl_output *output;
@@ -112,7 +113,6 @@ struct swaylock_surface {
 	struct wl_subsurface *subsurface;
 	struct ext_session_lock_surface_v1 *ext_session_lock_surface_v1;
 	struct pool_buffer indicator_buffers[2];
-	bool created;
 	bool dirty;
 	uint32_t width, height;
 	int32_t scale;
@@ -144,4 +144,5 @@ void initialize_pw_backend(int argc, char **argv);
 void run_pw_backend_child(void);
 void clear_buffer(char *buf, size_t size);
 
+int lenient_strcmp(char *a, char *b);
 #endif

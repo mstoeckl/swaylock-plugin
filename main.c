@@ -1180,11 +1180,6 @@ int main(int argc, char **argv) {
 	ext_session_lock_v1_add_listener(state.ext_session_lock_v1,
 		&ext_session_lock_v1_listener, &state);
 
-	if (wl_display_roundtrip(state.display) == -1) {
-		free(state.args.font);
-		return 1;
-	}
-
 	state.test_surface = cairo_image_surface_create(CAIRO_FORMAT_RGB24, 1, 1);
 	state.test_cairo = cairo_create(state.test_surface);
 

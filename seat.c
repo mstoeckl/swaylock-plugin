@@ -43,6 +43,9 @@ static void keyboard_keymap(void *data, struct wl_keyboard *wl_keyboard,
 	xkb_state_unref(state->xkb.state);
 	state->xkb.keymap = keymap;
 	state->xkb.state = xkb_state;
+
+	// Layout changes may require redraw
+	damage_state(state);
 }
 
 static void keyboard_enter(void *data, struct wl_keyboard *wl_keyboard,

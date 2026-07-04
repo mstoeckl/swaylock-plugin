@@ -203,7 +203,16 @@ Notes / limits:
 - **`swaylock-plugin`:** `meson.build`'s `project(version:)` is the single source
   of truth. Bump it in a PR; on merge, `release.yml` tags `vX.Y.Z` (asserting it
   is new and strictly greater than the latest tag). `make-srpm.sh` then builds
-  `Release: 1` for that tag and a snapshot Release for everything else.
+  `Release: 1` for that tag and a snapshot Release for everything else. A fork
+  marker `.syndr` is baked into `Release`, so the release NVR is
+  `swaylock-plugin-<ver>-1.syndr.fc44` (snapshots: `-0.<snap>.syndr.fc44`).
+- **Fork must bump past upstream tags.** `v1.8.6` already exists on `origin`
+  pointing at upstream commit `d329aac` ("bump version to 1.8.6"); this fork adds
+  commits on top *without* bumping `meson.build`. Because `release.yml` refuses a
+  tag that already exists, the first fork release must set `meson.build` to a
+  version not yet tagged (e.g. `1.8.6.1`, keeping the fork's line distinct from
+  upstream's 3-part numbering). The `.syndr` Release marker signals provenance;
+  the bumped `Version` is what actually lets a release cut.
 - `windowtolayer` tracks the newest upstream `vX.Y.Z` tag at build time (see its
   section above); its version is not derived from the `swaylock-plugin` tag.
 

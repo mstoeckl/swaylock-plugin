@@ -1,5 +1,8 @@
 # swaylock-plugin
 
+[![swaylock-plugin COPR build](https://copr.fedorainfracloud.org/coprs/syndr/swaylock-plugin/package/swaylock-plugin/status_image/last_build.png)](https://copr.fedorainfracloud.org/coprs/syndr/swaylock-plugin/package/swaylock-plugin/)
+[![windowtolayer COPR build](https://copr.fedorainfracloud.org/coprs/syndr/swaylock-plugin/package/windowtolayer/status_image/last_build.png)](https://copr.fedorainfracloud.org/coprs/syndr/swaylock-plugin/package/windowtolayer/)
+
 This is a fork of [`swaylock`](https://github.com/swaywm/swaylock), a screen
 locking utility for Wayland compositors. With `swaylock-plugin`, you can for
 your lockscreen background display the animated output from any wallpaper program

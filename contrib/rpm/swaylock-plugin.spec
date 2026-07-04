@@ -1,4 +1,4 @@
-%{!?pkg_version:%global pkg_version 1.8.6}
+%{!?pkg_version:%global pkg_version 1.8.6.1}
 
 Name:           swaylock-plugin
 Version:        %{pkg_version}
@@ -57,5 +57,9 @@ install -Dpm0755 example_xwayland_wrapper.py \
 %config(noreplace) %{_sysconfdir}/pam.d/swaylock-plugin
 
 %changelog
+* Sat Jul 04 2026 syndr <syndr@ultroncore.net> - 1.8.6.1-1
+- First fork release; version distinguished from upstream 1.8.6 (v1.8.6 is an
+  upstream tag). RPMs carry the .syndr Release marker.
+
 * Thu Jul 02 2026 Syndr <syndr@styx.ultroncore.net> - 1.8.6-1
 - Initial COPR package for the syndr swaylock-plugin fork

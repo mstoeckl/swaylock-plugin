@@ -1,0 +1,53 @@
+name: CI
+
+# Build-gate for pull requests: prove both packages' SRPMs build through the
+# real COPR entry point (.copr/Makefile), and that swaylock-plugin builds to a
+# full RPM. Does not publish anything and needs no secrets. windowtolayer's full
+# RPM build (Rust, dynamic crate BuildRequires) is left to COPR's mock, since it
+# tracks upstream and rarely depends on changes in this repo.
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    container: fedora:44
+    steps:
+      - name: Install packaging tools
+        run: |
+          dnf -y install \
+            git make curl tar gzip \
+            rpm-build rpmdevtools \
+            meson ninja-build gcc pam-devel scdoc \
+            cairo-devel gdk-pixbuf2-devel systemd-devel \
+            wayland-devel wayland-protocols-devel libxkbcommon-devel
+
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Trust the checkout (containerized git)
+        run: git config --global --add safe.directory "${GITHUB_WORKSPACE}"
+
+      - name: Build SRPMs via .copr/Makefile
+        run: |
+          set -euo pipefail
+          mkdir -p srpms
+          for spec in contrib/rpm/swaylock-plugin.spec contrib/rpm/windowtolayer.spec; do
+            echo "::group::make srpm ${spec}"
+            make -f .copr/Makefile srpm outdir="${PWD}/srpms" spec="${spec}"
+            echo "::endgroup::"
+          done
+          ls -l srpms
+
+      - name: Full RPM build (swaylock-plugin)
+        run: |
+          set -euo pipefail
+          srpm="$(ls srpms/swaylock-plugin-*.src.rpm)"
+          # PRs are never at a release tag, so the SRPM carries a snapshot
+          # Release (0.<utc>.g<sha>) by design — this only proves it compiles.
+          rpmbuild --rebuild --define "_topdir ${PWD}/rpmbuild" "${srpm}"
+          echo "== built packages =="
+          rpm -qlp rpmbuild/RPMS/*/swaylock-plugin-*.rpm | grep -vE '/\.build-id'

@@ -1,0 +1,62 @@
+name: Release tag
+
+# On merge to main: if meson.build declares a version we have not released yet,
+# create and push the vX.Y.Z tag. That tag push fires the COPR webhook, which
+# builds and publishes the RPM. meson.build's version is the single source of
+# truth; a merge that does not bump it produces no tag and no release, so a
+# published NVR is never overwritten.
+#
+# No COPR credentials here — only the ephemeral GITHUB_TOKEN, used to push the
+# tag. Pushing a tag with GITHUB_TOKEN still reaches the repo webhook (COPR),
+# even though it does not re-trigger GitHub Actions.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Tag if meson.build version is new and higher
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          git fetch --tags --force --quiet
+
+          version="$(sed -nE "s/[[:space:]]*version: '([^']+)'.*/\1/p" meson.build | head -n1)"
+          if [ -z "${version}" ]; then
+            echo "could not read version from meson.build" >&2
+            exit 1
+          fi
+          echo "meson.build version: ${version}"
+
+          if git rev-parse -q --verify "refs/tags/v${version}" >/dev/null; then
+            echo "tag v${version} already exists — no version bump, nothing to release."
+            exit 0
+          fi
+
+          # Guard against downgrades/typos: v${version} must be the new highest.
+          highest="$(git tag --list 'v*' | sed 's/^v//' | sort -V | tail -n1)"
+          if [ -n "${highest}" ]; then
+            top="$(printf '%s\n%s\n' "${highest}" "${version}" | sort -V | tail -n1)"
+            if [ "${top}" != "${version}" ]; then
+              echo "meson.build version ${version} is not greater than latest tag v${highest}" >&2
+              exit 1
+            fi
+          fi
+
+          echo "Releasing v${version}"
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "v${version}" -m "Release v${version}"
+          git push origin "v${version}"

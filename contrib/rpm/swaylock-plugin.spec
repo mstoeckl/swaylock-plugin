@@ -2,7 +2,7 @@
 
 Name:           swaylock-plugin
 Version:        %{pkg_version}
-Release:        1%{?dist}
+Release:        %{?pkg_release}%{!?pkg_release:1}%{?dist}
 Summary:        Screen locker with plugin support for Wayland compositors
 
 License:        MIT

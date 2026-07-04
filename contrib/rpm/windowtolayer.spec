@@ -1,5 +1,7 @@
+%{!?pkg_version:%global pkg_version 0.3.1}
+
 Name:           windowtolayer
-Version:        0.3.1
+Version:        %{pkg_version}
 Release:        1%{?dist}
 Summary:        Display Wayland applications as layer-shell wallpaper surfaces
 

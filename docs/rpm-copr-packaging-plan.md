@@ -92,13 +92,25 @@ official repos do not provide `windowtolayer`. A third-party COPR
 same COPR project.
 
 `windowtolayer` lives at `https://gitlab.freedesktop.org/mstoeckl/windowtolayer`
-(separate upstream project). Package it from upstream tagged release archives,
-starting with **`v0.3.1`**:
+(separate upstream project). Package it from upstream tagged release archives.
+
+**DECISION — track latest, not a pin.** The spec `Version` is injected at build
+time by `contrib/rpm/make-srpm.sh`, which resolves the newest stable `vX.Y.Z`
+tag from the GitLab tags API and downloads that archive. The `Version:` in the
+spec is only a fallback for a bare `rpmbuild`:
 
 ```spec
-Version: 0.3.1
-Source0: https://gitlab.freedesktop.org/mstoeckl/windowtolayer/-/archive/v%{version}/windowtolayer-v%{version}.tar.gz
+%{!?pkg_version:%global pkg_version 0.3.1}
+Version: %{pkg_version}
+Source0: %{url}/-/archive/v%{version}/windowtolayer-v%{version}.tar.gz
 ```
+
+This trades reproducibility (the old "bump intentionally" pin) for zero manual
+maintenance: every `swaylock-plugin` tag rebuilds `windowtolayer` at whatever is
+newest upstream. Acceptable here — small package, same author as upstream
+swaylock. Caveat: COPR only *notices* a new upstream release when the webhook
+fires (i.e. on your next `swaylock-plugin` tag), because we cannot install a
+webhook on mstoeckl's GitLab; there is no independent upstream poller.
 
 Packaging notes:
 - Keep the spec at `contrib/rpm/windowtolayer.spec` in this repo; do not create a
@@ -109,73 +121,91 @@ Packaging notes:
   pkgconfig(wayland-scanner)`. `rustfmt` is required by its `build.rs`
   (protocol codegen), `python3` by `protogen.py`. (We hit the `rustfmt`
   requirement during the ad-hoc build.)
-- Use Fedora Rust macros (`%cargo_prep`, `%cargo_build`, `%cargo_install`) and
-  `%generate_buildrequires` / `%cargo_generate_buildrequires`. Prefer vendored
-  crates for reproducibility; only use COPR networked builds if vendoring becomes
-  unnecessarily heavy for this small package.
+- Use Fedora Rust macros (`%cargo_prep`, `%cargo_build`) and
+  `%generate_buildrequires` / `%cargo_generate_buildrequires`. **Confirmed
+  (2026-07-01):** all four crates (`arrayvec lexopt log rustix`) ship in the
+  Fedora 44 repos, so the dynamic `crate(...)` BuildRequires resolve in mock —
+  **no vendoring and no networked build are required.**
 - Ships `/usr/bin/windowtolayer` and `%license COPYING`.
 
 ---
 
-## Build trigger: GitHub release → COPR
+## Build trigger: GitHub Actions tags → COPR SCM webhook (decided)
 
-Use **GitHub Actions on `release: [published]`** so RPMs are cut per tagged
-release (explicit version control), submitting to COPR via `copr-cli`.
+**DECISION — COPR builds the SRPMs itself from git; GitHub Actions only
+build-checks and creates release tags; no COPR API token anywhere.** Rejected
+the original `copr-cli`-from-Actions design because the COPR API token expires
+every 180 days and authenticates as the whole account. COPR's SCM "make srpm"
+method + a tag webhook needs no token; Actions handles CI and tagging with only
+the ephemeral `GITHUB_TOKEN`.
 
-Outline (`.github/workflows/copr-release.yml`):
+Pipeline: bump `meson.build` in a PR → **CI build-gate** (`.github/workflows/
+ci.yml`) proves both packages build → merge → **auto-tag** (`.github/workflows/
+release.yml`) pushes `vX.Y.Z` when the version is new+higher → the tag push
+fires the COPR webhook → COPR builds & publishes. `meson.build`'s version is the
+single source of truth; a merge that does not bump it produces no tag, no
+release, and therefore no NVR collision.
 
-```yaml
-on:
-  release:
-    types: [published]
-jobs:
-  copr:
-    runs-on: ubuntu-latest
-    container: fedora:44              # has rpmbuild/copr-cli, or dnf install them
-    steps:
-      - uses: actions/checkout@v4
-      - run: dnf -y install copr-cli rpm-build rpmdevtools git tar gzip
-      - name: COPR auth
-        run: |
-          mkdir -p ~/.config
-          printf '%s' "${{ secrets.COPR_API_TOKEN }}" > ~/.config/copr   # full ~/.config/copr file
-      - name: Build SRPM
-        run: |
-          # derive VERSION from the release tag and require it to match meson.build
-          # create rpmbuild/{SOURCES,SRPMS}
-          # git archive this release commit into SOURCES/swaylock-plugin-${VERSION}.tar.gz
-          # download/stage Source0 for windowtolayer; do not rely on rpmbuild fetching URLs
-          # rpmbuild -bs both specs with _topdir pointing at the local rpmbuild dir
-      - name: Submit to COPR
-        run: |
-          for srpm in rpmbuild/SRPMS/*.src.rpm; do
-            copr-cli build syndr/swaylock-plugin "$srpm"
-          done
-```
+Layer 1 — GitHub Actions (no publish, no COPR secret):
+- **`ci.yml`** on `pull_request`: in a `fedora:44` container, build both SRPMs
+  through the real `make -f .copr/Makefile srpm …` entry point, then full-build
+  the `swaylock-plugin` RPM. (windowtolayer's full Rust build is left to COPR's
+  mock — it tracks upstream and rarely depends on this repo's changes.)
+- **`release.yml`** on `push: main`: read `meson.build` version `V`; if tag `vV`
+  is absent and strictly greater than the highest existing tag, create and push
+  it with `GITHUB_TOKEN` (`permissions: contents: write`). A tag pushed by
+  `GITHUB_TOKEN` does not re-trigger Actions but *does* reach the COPR webhook.
 
-- **`COPR_API_TOKEN`** GH secret = the full contents of the COPR-provided
-  `~/.config/copr` token file (from copr.fedorainfracloud.org → API).
-- Alternative (no Actions): COPR's own SCM/webhook build from a `.copr/Makefile`
-  with an `srpm:` target — but that triggers on push, not releases, so Actions +
-  `copr-cli` is the better match for "release-triggered".
-- Build and submit both SRPMs from this repo: `swaylock-plugin` from this
-  release, and `windowtolayer` from the pinned upstream version in
-  `contrib/rpm/windowtolayer.spec`. Use either one workflow job with two SRPM
-  build/submit steps or separate package jobs in the same workflow.
-- The workflow must stage all `Source0` files before `rpmbuild -bs`: the
-  `swaylock-plugin` archive produced by `git archive`, and the upstream
-  `windowtolayer` archive downloaded from GitLab.
+Layer 2 — COPR SCM build (how it works):
+
+- Each package in the COPR project uses source type **Custom → SCM**, method
+  **`make srpm`**, clone URL = this repo, and a **Spec File** field pointing at
+  its spec (`contrib/rpm/swaylock-plugin.spec` or `.../windowtolayer.spec`).
+- COPR invokes `make -f .copr/Makefile srpm outdir=<dir> spec=<spec-path>`, and
+  `.copr/Makefile` delegates to `contrib/rpm/make-srpm.sh`, which **branches on
+  the spec basename** (COPR passes it as `$(spec)`):
+  - `swaylock-plugin.spec` → `git archive` the built ref. Version comes from
+    `meson.build`. An exact `vX.Y.Z` tag matching `meson.build` is *the* release
+    → `Release: 1`; a mismatched tag hard-fails; any **non-tag** build (branch,
+    manual COPR "Rebuild", PR CI) gets a snapshot `Release: 0.<utc>.g<sha>` that
+    sorts *below* `-1`, so it can never overwrite a published NVR or be offered
+    to dnf as an upgrade. (Spec: `Release: %{?pkg_release}%{!?pkg_release:1}`.)
+  - `windowtolayer.spec` → resolve newest upstream tag (track-latest) and
+    download its archive.
+  The same script runs identically whether COPR calls it in mock or you run
+  `make -f .copr/Makefile srpm outdir=/tmp spec=…` locally.
+- **Trigger:** a GitHub webhook to the project's COPR integration URL
+  (`https://copr.fedorainfracloud.org/webhooks/github/<id>/<uuid>/`, from the
+  project's *Settings → Integrations*), configured for **"Branch or tag
+  creation"** only. Pushing a `vX.Y.Z` tag rebuilds **both** packages (webhook
+  left project-wide, not package-scoped), so `windowtolayer` refreshes to latest
+  on every `swaylock-plugin` release — no manual `copr-cli` submit from a
+  workstation.
+
+Notes / limits:
+- SRPM generation has outbound network in COPR's srpm phase (that is where
+  `make-srpm.sh` curls the GitLab tag API + archive); the separate "internet
+  during builds" chroot toggle stays **off** — the RPM build resolves all deps
+  from Fedora repos.
+- The COPR webhook is set to **"Branch or tag creation."** GitHub cannot narrow
+  that to tags-only, so a *new branch* also fires it — but such a build is not at
+  a release tag, so the snapshot-`Release` rule above makes it land harmlessly
+  below the release. This is the real safety net; COPR's undocumented
+  webhook-vs-`committish` behaviour is not relied upon. (Setting the package
+  `committish` to `main` is a fine default for the manual "Rebuild" button but is
+  not a safety mechanism.)
+- Duplicate-NVR rebuilds are harmless: if upstream `windowtolayer` has not moved
+  between two `swaylock-plugin` tags, COPR rebuilds the identical NVR and dnf
+  sees no upgrade.
 
 ### Versioning
 
-- Tag `swaylock-plugin` releases as `vX.Y.Z` (e.g. `v1.8.6`). The workflow
-  derives the `swaylock-plugin` RPM `Version` from the tag
-  (`${GITHUB_REF_NAME#v}`) and should fail if it does not match
-  `meson.build`'s `project(version:)`.
-- `windowtolayer` has its own upstream version pinned in
-  `contrib/rpm/windowtolayer.spec` (initially `0.3.1`). Bump it intentionally
-  when adopting a newer upstream release; do not derive it from the
-  `swaylock-plugin` release tag.
+- **`swaylock-plugin`:** `meson.build`'s `project(version:)` is the single source
+  of truth. Bump it in a PR; on merge, `release.yml` tags `vX.Y.Z` (asserting it
+  is new and strictly greater than the latest tag). `make-srpm.sh` then builds
+  `Release: 1` for that tag and a snapshot Release for everything else.
+- `windowtolayer` tracks the newest upstream `vX.Y.Z` tag at build time (see its
+  section above); its version is not derived from the `swaylock-plugin` tag.
 
 ---
 
@@ -183,8 +213,12 @@ jobs:
 
 - `contrib/rpm/swaylock-plugin.spec`.
 - `contrib/rpm/windowtolayer.spec`.
-- `.github/workflows/copr-release.yml`.
-- Optionally `.copr/Makefile` if also supporting COPR webhook builds.
+- `contrib/rpm/make-srpm.sh` — SRPM generator, branches per spec; release vs
+  snapshot `Release` logic.
+- `.copr/Makefile` — COPR `make srpm` entry point; delegates to the script.
+- `.github/workflows/ci.yml` — PR build-gate (both SRPMs + full swaylock-plugin
+  RPM). `.github/workflows/release.yml` — auto-tag on `meson.build` version bump.
+  (Neither carries a COPR secret; the retired `copr-release.yml` did.)
 - The `swaylock-plugin` spec installs `example_xwayland_wrapper.py` into
   `/usr/libexec/swaylock-plugin/`; no Meson source change is required for that.
 
@@ -192,23 +226,54 @@ jobs:
 
 ## Tasks
 
-1. Create the COPR project `syndr/swaylock-plugin` (chroot `fedora-44-x86_64`);
-   generate an API token; add it as the `COPR_API_TOKEN` GH secret.
-2. Write `swaylock-plugin.spec` (`%meson` build; ship PAM + binaries + man +
-   completions; add the Xwayland wrapper at
+1. **TODO (external, owner only).** Create the COPR project
+   `syndr/swaylock-plugin` (chroot `fedora-44-x86_64`). Add two packages, both
+   source type **SCM**, method **`make srpm`**, clone url
+   `https://github.com/syndr/swaylock-plugin`, blank committish/subdirectory,
+   **Auto-rebuild ✅**, Spec File = `contrib/rpm/swaylock-plugin.spec` and
+   `.../windowtolayer.spec` respectively. Under *Settings → Integrations*, wire
+   the GitHub webhook for **"Branch or tag creation"** only. No API token / GH
+   secret needed.
+2. **DONE + validated.** `contrib/rpm/swaylock-plugin.spec` (`%meson` build;
+   ships PAM + binaries + man + completions; Xwayland wrapper at
    `/usr/libexec/swaylock-plugin/example_xwayland_wrapper.py`).
-3. Write `windowtolayer.spec` in this repo, sourcing upstream `v0.3.1` from
-   GitLab and publishing it to the same COPR.
-4. Add `.github/workflows/copr-release.yml` (release-triggered → SRPM →
-   `copr-cli build` for both packages; stage explicit source archives first).
-5. Cut a test release; confirm both RPMs build in COPR for F44 and install
-   cleanly (`dnf copr enable` in a throwaway F44 container, `rpm-ostree`-style
-   layering test if possible).
-6. Update phalanx to install `swaylock-plugin`, `windowtolayer`,
-   `xorg-x11-server-Xwayland`, and `xkbcomp`, and to create `/var/lib/xkb` with
+3. **DONE + validated.** `contrib/rpm/windowtolayer.spec` (track-latest upstream
+   tag); publishes to the same COPR.
+4. **DONE + validated.** `.copr/Makefile` + `contrib/rpm/make-srpm.sh` (COPR
+   `make srpm` entry point; branches per spec; git-archive for swaylock-plugin
+   with release-vs-snapshot `Release`, latest-tag resolution for windowtolayer).
+   Retired the `.github/workflows/copr-release.yml` Actions design.
+5. **DONE.** `.github/workflows/ci.yml` (PR build-gate) and `release.yml`
+   (auto-tag on `meson.build` version bump, `GITHUB_TOKEN` only). Not yet
+   exercised on real GitHub.
+6. **TODO (external).** Bump `meson.build` in a PR and merge; confirm `release.yml`
+   tags `vX.Y.Z`, the webhook fires, and both RPMs build in COPR for F44 and
+   install cleanly. Local F44 pre-check already passed (see below).
+7. **TODO (phalanx repo).** Install `swaylock-plugin`, `windowtolayer`,
+   `xorg-x11-server-Xwayland`, and `xkbcomp`, and create `/var/lib/xkb` with
    mode `1777` if no package owns it in the image.
-7. Tell hyprland-wm-config the final wrapper path:
+8. **TODO (hyprland-wm-config repo).** Final wrapper path:
    `/usr/libexec/swaylock-plugin/example_xwayland_wrapper.py`.
+
+### Local F44 build validation (2026-07-01, re-run 2026-07-03)
+
+Built end-to-end in a `fedora-toolbox:44` distrobox (see `contrib/build-env.sh`
+for the pattern), reproducing what COPR's mock does — including the real COPR
+entry point `make -f .copr/Makefile srpm outdir=… spec=…` for both packages:
+
+- **SRPMs via `.copr/Makefile`:** both build. `make-srpm.sh` produced
+  `swaylock-plugin-1.8.6-1` (git archive) and resolved `windowtolayer` to latest
+  upstream `v0.3.1` and built `windowtolayer-0.3.1-1`.
+- **`swaylock-plugin` full build:** succeeds. Package ships exactly the `%files`
+  list — `/usr/bin/{swaylock-plugin,swaylock-sleep-watcher}`,
+  `%{_libexecdir}/swaylock-plugin/example_xwayland_wrapper.py`, renamed
+  completions (`swaylock-plugin`, `.fish`, `_swaylock-plugin`),
+  `man1/swaylock-plugin.1.gz`, `%config(noreplace) /etc/pam.d/swaylock-plugin`,
+  `LICENSE`. Auto-deps resolve to `python3` + expected shared libs.
+- **`windowtolayer` full rebuild:** succeeds. Dynamic crate BuildRequires
+  (`crate(arrayvec/lexopt/log/rustix …)`) all resolve from Fedora 44 repos, so
+  **no vendoring is needed** — COPR's mock two-pass build handles it. Ships
+  `/usr/bin/windowtolayer` + `COPYING`.
 
 ## Open questions
 

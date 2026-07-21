@@ -418,10 +418,21 @@ static void nested_surface_commit(struct wl_client *client,
 		}
 	}
 	if (output_width != surface->last_acked_width || output_height != surface->last_acked_height) {
-		swaylock_log(LOG_ERROR, "Wallpaper program committed surface at size %d x %d, which does not exactly match last acknowledged W x H = %d x %d",
-			output_width, output_height, surface->last_acked_width, surface->last_acked_height);
-		wl_resource_post_error(resource, 1000, "The wallpaper program should exactly match the configure width/height");
-		return;
+		/* The plugin committed a size that does not match the acked configure
+		 * (e.g. a terminal that rounds to whole character cells). Override the
+		 * background surface's viewport destination so the committed content is
+		 * scaled to exactly the acked size, rather than rejecting the commit
+		 * (which would leave the locker with no plugin). The viewport source,
+		 * if any, was already set from the plugin's own viewport above. */
+		if (sw_surf->viewport) {
+			wp_viewport_set_destination(sw_surf->viewport,
+				surface->last_acked_width, surface->last_acked_height);
+		} else {
+			swaylock_log(LOG_ERROR, "Wallpaper program committed surface at size %d x %d, which does not exactly match last acknowledged W x H = %d x %d, and no wp_viewporter is available to rescale it",
+				output_width, output_height, surface->last_acked_width, surface->last_acked_height);
+			wl_resource_post_error(resource, 1000, "The wallpaper program should exactly match the configure width/height");
+			return;
+		}
 	}
 
 	// TODO: verify that on scale or attachment change, the resulting size exactly matches the output

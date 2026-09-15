@@ -137,7 +137,8 @@ static void destroy_surface(struct swaylock_surface *surface) {
 	}
 	wl_list_remove(&surface->link);
 	if (surface->plugin_surface) {
-		// todo: proper cleanup
+		// Detach the plugin surface from `surface`; if a shared plugin is used, it
+		// will clean it up later; see below for per-output commands.
 		zwlr_layer_surface_v1_send_closed(surface->plugin_surface->layer_surface);
 		surface->plugin_surface->sway_surface = NULL;
 		surface->plugin_surface->inert = true;

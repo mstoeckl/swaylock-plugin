@@ -81,6 +81,7 @@ static void nested_surface_attach(struct wl_client *client,
 	if (buffer) {
 		assert(wl_resource_instance_of(buffer, &wl_buffer_interface, &buffer_impl));
 		f_buffer = wl_resource_get_user_data(buffer);
+		assert(f_buffer);
 	}
 
 	if (surface->pending.attachment == f_buffer) {
@@ -99,7 +100,9 @@ static void nested_surface_attach(struct wl_client *client,
 		}
 	}
 
-	wl_list_insert(&f_buffer->pending_surfaces, &surface->pending.attachment_link);
+	if (f_buffer) {
+		wl_list_insert(&f_buffer->pending_surfaces, &surface->pending.attachment_link);
+	}
 	surface->pending.attachment = f_buffer;
 }
 static void nested_surface_damage(struct wl_client *client,

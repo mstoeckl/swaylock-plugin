@@ -608,6 +608,10 @@ static void nested_surface_set_buffer_scale(struct wl_client *client,
 		struct wl_resource *resource, int32_t scale) {
 	assert(wl_resource_instance_of(resource, &wl_surface_interface, &surface_impl));
 	struct forward_surface *surface = wl_resource_get_user_data(resource);
+	if (scale <= 0) {
+		wl_resource_post_error(resource, WL_SURFACE_ERROR_INVALID_SCALE, "scale is < 1");
+		return;
+	}
 	surface->pending.buffer_scale = scale;
 }
 static void nested_surface_damage_buffer(struct wl_client *client,

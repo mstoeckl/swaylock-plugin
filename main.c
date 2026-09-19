@@ -160,14 +160,17 @@ static void destroy_surface(struct swaylock_surface *surface) {
 		struct wl_resource *output, *tmp;
 		wl_resource_for_each_safe(output, tmp, &surface->nested_server_xdg_output_resources) {
 			wl_list_remove(wl_resource_get_link(output));
+			assert(!wl_resource_get_user_data(output));
 			wl_list_insert(&state->stale_xdg_output_resources, wl_resource_get_link(output));
 		}
 		wl_resource_for_each_safe(output, tmp, &surface->nested_server_wl_output_resources) {
 			wl_list_remove(wl_resource_get_link(output));
+			wl_resource_set_user_data(output, NULL);
 			wl_list_insert(&state->stale_wl_output_resources, wl_resource_get_link(output));
 		}
 		wl_resource_for_each_safe(output, tmp, &surface->nested_server_color_output_resources) {
 			wl_list_remove(wl_resource_get_link(output));
+			wl_resource_set_user_data(output, NULL);
 			wl_list_insert(&state->stale_color_output_resources, wl_resource_get_link(output));
 		}
 	}
@@ -1481,6 +1484,11 @@ static void xdg_output_manager_get_xdg_output(struct wl_client *client,
 		struct wl_resource *resource, uint32_t id, struct wl_resource *output) {
 	assert(wl_resource_instance_of(output, &wl_output_interface, &wl_output_impl));
 	struct swaylock_surface *surface = wl_resource_get_user_data(output);
+	if (!surface) {
+		// TODO: keep surface properties alive long enough to send basic events
+		wl_client_post_implementation_error(client, "xdg output created from stale wl_output");
+		return;
+	}
 
 	struct wl_resource *output_resource =
 		wl_resource_create(client, &zxdg_output_v1_interface,
@@ -1489,7 +1497,7 @@ static void xdg_output_manager_get_xdg_output(struct wl_client *client,
 		wl_client_post_no_memory(client);
 		return;
 	}
-	wl_resource_set_implementation(output_resource, &zxdg_output_impl, surface, xdg_output_destroy_func);
+	wl_resource_set_implementation(output_resource, &zxdg_output_impl, NULL, xdg_output_destroy_func);
 
 	wl_list_insert(&surface->nested_server_xdg_output_resources, wl_resource_get_link(output_resource));
 
@@ -1543,7 +1551,8 @@ static void bind_wl_output(struct wl_client *client, void *data,
 		wl_client_post_no_memory(client);
 		return;
 	}
-	wl_resource_set_implementation(resource, &wl_output_impl, surface, wl_output_handle_destroy);
+	wl_resource_set_implementation(resource, &wl_output_impl,
+		surface, wl_output_handle_destroy);
 
 	wl_list_insert(&surface->nested_server_wl_output_resources, wl_resource_get_link(resource));
 
@@ -1805,12 +1814,32 @@ static void setup_clientless_mode(struct swaylock_state *state) {
 	}
 
 	// First, shutdown nested server, and all resources and clients.
-	// todo: any additional clean up necessary?
+	// setup_clientless_mode may be initiated by one surface's client timing out,
+	// and must still clean up the others.
+
+	struct swaylock_surface *surface = NULL;
+	wl_list_for_each(surface, &state->surfaces, link) {
+		if (surface->client) {
+			wl_list_remove(&surface->client->client_destroy_listener.link);
+			wl_list_init(&surface->client->client_destroy_listener.link);
+			wl_client_destroy(surface->client->client);
+			cleanup_client(surface->client);
+			surface->client = NULL;
+		}
+	}
+	if (state->server.main_client) {
+		wl_list_remove(&state->server.main_client->client_destroy_listener.link);
+		wl_list_init(&state->server.main_client->client_destroy_listener.link);
+		wl_client_destroy(state->server.main_client->client);
+		cleanup_client(state->server.main_client);
+		state->server.main_client = NULL;
+	}
+
 	loop_remove_fd(state->eventloop, wl_event_loop_get_fd(state->server.loop));
+	wl_display_destroy_clients(state->server.display);
 	wl_display_destroy(state->server.display);
 	state->server.display = NULL;
 
-	struct swaylock_surface *surface = NULL;
 	wl_list_for_each(surface, &state->surfaces, link) {
 		bool pre_configure = surface->width <= 0 || surface->height <= 0;
 		if (pre_configure) {

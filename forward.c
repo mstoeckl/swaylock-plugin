@@ -193,10 +193,11 @@ static const struct wl_callback_listener bg_frame_listener = {
 static void apply_pending_subsurf_entry(struct subsurface_entry *entry,
 		struct forward_surface *surface, struct wl_surface *last_surface, bool synchronized) {
 	if (!entry->surface->ext_subsurface) {
+		struct wl_surface *parent = surface->sway_surface
+			? surface->sway_surface->surface.surface : surface->ext_surface.surface;
 		entry->surface->ext_subsurface =
-			wl_subcompositor_get_subsurface(
-				surface->state->subcompositor, entry->surface->ext_surface.surface,
-				surface->sway_surface->surface.surface);
+			wl_subcompositor_get_subsurface(surface->state->subcompositor,
+				entry->surface->ext_surface.surface, parent);
 	}
 	if (entry->is_desync) {
 		wl_subsurface_set_desync(entry->surface->ext_subsurface);
@@ -2059,8 +2060,8 @@ static const struct wp_image_description_creator_params_v1_interface desc_creato
 	.set_luminances = nested_desc_creator_params_set_luminances,
 	.set_mastering_display_primaries = nested_desc_creator_params_set_mastering_display_primaries,
 	.set_mastering_luminance = nested_desc_creator_params_set_mastering_luminance,
-	.set_max_cll = nested_desc_creator_params_set_max_fall,
-	.set_max_fall = nested_desc_creator_params_set_max_cll,
+	.set_max_cll = nested_desc_creator_params_set_max_cll,
+	.set_max_fall = nested_desc_creator_params_set_max_fall,
 };
 
 
@@ -2076,8 +2077,15 @@ static void nested_color_output_destroy(struct wl_client *client,
 static void nested_color_output_get_image_description(struct wl_client *client,
 		struct wl_resource *resource, uint32_t image_description) {
 	struct swaylock_surface *surface = wl_resource_get_user_data(resource);
-	assert(surface->output_desc.current);
-	create_output_image_desc(resource, surface->output_desc.current, image_description);
+	if (!surface) {
+		struct image_description_properties *fail = create_image_description_props();
+		fail->failed = true;
+		fail->failure_cause = WP_IMAGE_DESCRIPTION_V1_CAUSE_NO_OUTPUT;
+		fail->failure_reason = "output removed";
+	} else {
+		assert(surface->output_desc.current);
+		create_output_image_desc(resource, surface->output_desc.current, image_description);
+	}
 }
 static const struct wp_color_management_output_v1_interface color_output_impl = {
 	.destroy = nested_color_output_destroy,

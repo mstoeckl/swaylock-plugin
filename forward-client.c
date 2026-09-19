@@ -292,9 +292,10 @@ static void request_new_image_desc(struct image_description_state *state) {
 
 static void image_desc_info_handle_done(void *data,
 		struct wp_image_description_info_v1 *info) {
-	wp_image_description_info_v1_destroy(info);
-
 	struct image_description_state *state = data;
+	assert(state->info_request == info);
+	state->info_request = NULL;
+	wp_image_description_info_v1_destroy(info);
 
 	// Commit the new state
 	unref_image_description_props(state->current);
@@ -543,7 +544,8 @@ const struct wp_color_management_surface_feedback_v1_listener color_surface_feed
 
 static void color_output_handle_image_desc_changed(void *data,
 		struct wp_color_management_output_v1 *wp_color_management_output_v1) {
-	struct image_description_state *state = data;
+	struct swaylock_surface *surface = data;
+	struct image_description_state *state = &surface->output_desc;
 
 	if (state->pending) {
 		// One request is in progress, wait for the pending slot to become available

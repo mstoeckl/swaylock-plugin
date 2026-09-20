@@ -57,7 +57,7 @@ static bool does_transform_transpose_size(int32_t transform) {
 	case WL_OUTPUT_TRANSFORM_270:
 	case WL_OUTPUT_TRANSFORM_FLIPPED_90:
 	case WL_OUTPUT_TRANSFORM_FLIPPED_270:
-		return false;
+		return true;
 	}
 }
 
@@ -247,8 +247,8 @@ static void apply_pending_surface_updates(struct forward_surface *surface,
 			surface->committed.viewport_source_h != surface->pending.viewport_source_h) {
 		assert(background->viewport);
 		wp_viewport_set_source(background->viewport,
-			surface->committed.viewport_source_x, surface->committed.viewport_source_y,
-			surface->committed.viewport_source_w, surface->committed.viewport_source_h);
+			surface->pending.viewport_source_x, surface->pending.viewport_source_y,
+			surface->pending.viewport_source_w, surface->pending.viewport_source_h);
 		surface->committed.viewport_source_x = surface->pending.viewport_source_x;
 		surface->committed.viewport_source_y = surface->pending.viewport_source_y;
 		surface->committed.viewport_source_w = surface->pending.viewport_source_w;
@@ -2278,7 +2278,7 @@ void bind_color_manager(struct wl_client *client, void *data,
 	for (size_t i = 0; i < state->supported_intents_len; i++) {
 		if (!(version >= WP_COLOR_MANAGER_V1_RENDER_INTENT_ABSOLUTE_NO_ADAPTATION_SINCE_VERSION)
 				&& state->supported_intents[i] == WP_COLOR_MANAGER_V1_RENDER_INTENT_ABSOLUTE_NO_ADAPTATION) {
-			return;
+			continue;
 		}
 		wp_color_manager_v1_send_supported_intent(
 			resource, state->supported_intents[i]);

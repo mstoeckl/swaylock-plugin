@@ -865,7 +865,11 @@ static void nested_subsurface_place_above(struct wl_client *client,
 	assert(wl_resource_instance_of(sibling, &wl_surface_interface, &surface_impl));
 	struct forward_surface *fwd_surface = wl_resource_get_user_data(resource);
 	struct forward_surface *sib_surface = wl_resource_get_user_data(sibling);
-	assert(fwd_surface != sib_surface);
+	if (fwd_surface == sib_surface) {
+		wl_resource_post_error(resource, WL_SUBSURFACE_ERROR_BAD_SURFACE,
+			"surface cannot be placed above itself");
+		return;
+	}
 
 	struct forward_surface *parent = fwd_surface->subsurface_parent;
 	if (!fwd_surface->subsurface_parent || fwd_surface->inert) {
@@ -894,7 +898,11 @@ static void nested_subsurface_place_below(struct wl_client *client,
 	assert(wl_resource_instance_of(sibling, &wl_surface_interface, &surface_impl));
 	struct forward_surface *fwd_surface = wl_resource_get_user_data(resource);
 	struct forward_surface *sib_surface = wl_resource_get_user_data(sibling);
-	assert(fwd_surface != sib_surface);
+	if (fwd_surface == sib_surface) {
+		wl_resource_post_error(resource, WL_SUBSURFACE_ERROR_BAD_SURFACE,
+			"surface cannot be placed below itself");
+		return;
+	}
 
 	struct forward_surface *parent = fwd_surface->subsurface_parent;
 	if (!fwd_surface->subsurface_parent || fwd_surface->inert) {

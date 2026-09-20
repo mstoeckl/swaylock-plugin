@@ -984,15 +984,14 @@ static void subcompositor_get_subsurface(struct wl_client *client,
 	}
 
 	struct forward_surface *ancestor = parent_surf;
-	while (ancestor->subsurface_parent) {
+	do {
+		if (ancestor == child_surf) {
+			wl_resource_post_error(resource, WL_SUBCOMPOSITOR_ERROR_BAD_PARENT,
+				"parent surface is or descends from child");
+			return;
+		}
 		ancestor = ancestor->subsurface_parent;
-	}
-
-	if (ancestor == child_surf) {
-		wl_resource_post_error(resource, WL_SUBCOMPOSITOR_ERROR_BAD_PARENT,
-			"parent surface descends from child");
-		return;
-	}
+	} while (ancestor);
 
 	struct forward_state *state = child_surf->state;
 

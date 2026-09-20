@@ -2194,12 +2194,14 @@ static void sleep_in(int fd, short mask, void *data) {
 		swaylock_log(LOG_DEBUG, "Received sleep notification, ending unlock grace period");
 		loop_remove_timer(state->eventloop, state->grace_timer);
 		state->grace_timer = NULL;
-		close(state->sleep_comm_r);
-		close(state->sleep_comm_w);
-		state->sleep_comm_r = -1;
-		state->sleep_comm_w = -1;
 	}
+	assert(state->sleep_comm_r >= 0);
+	assert(state->sleep_comm_w >= 0);
 	loop_remove_fd(state->eventloop, state->sleep_comm_r);
+	close(state->sleep_comm_r);
+	close(state->sleep_comm_w);
+	state->sleep_comm_r = -1;
+	state->sleep_comm_w = -1;
 }
 
 static int start_sleep_watcher(int *sleep_comm_r, int* sleep_comm_w) {

@@ -1,7 +1,10 @@
 #include "swaylock.h"
 
 #include "log.h"
-#include "assert.h"
+#include <assert.h>
+#include <stdlib.h>
+#include <unistd.h>
+
 #include "color-management-v1-server-protocol.h"
 
 static size_t next_power_of_two(size_t n) {

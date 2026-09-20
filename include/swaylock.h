@@ -509,7 +509,6 @@ struct swaylock_state {
 };
 
 struct swaylock_surface {
-	cairo_surface_t *image;
 	struct swaylock_state *state;
 	struct wl_output *output;
 	uint32_t output_global_name;
@@ -628,7 +627,6 @@ void add_serial_pair(struct forward_surface *surf, uint32_t upstream_serial,
 struct swaylock_image {
 	char *path;
 	char *output_name;
-	cairo_surface_t *cairo_surface;
 	struct wl_list link;
 };
 

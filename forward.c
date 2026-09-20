@@ -9,6 +9,7 @@
 #include <wayland-server-protocol.h>
 #include <stdlib.h>
 #include <assert.h>
+#include <unistd.h>
 
 #include "color-management-v1-server-protocol.h"
 #include "color-representation-v1-server-protocol.h"

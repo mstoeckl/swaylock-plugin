@@ -3,6 +3,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <getopt.h>
+#include <limits.h>
 #include <poll.h>
 #include <signal.h>
 #include <spawn.h>
@@ -22,6 +23,7 @@
 #include "background-image.h"
 #include "cairo.h"
 #include "comm.h"
+#include "config.h"
 #include "log.h"
 #include "loop.h"
 #include "password-buffer.h"
@@ -229,20 +231,8 @@ static const struct wp_fractional_scale_v1_listener fract_scale_listener = {
 	.preferred_scale = fract_scale_preferred_scale,
 };
 
-static cairo_surface_t *select_image(struct swaylock_state *state,
-		struct swaylock_surface *surface);
-
-static bool surface_is_opaque(struct swaylock_surface *surface) {
-	if (surface->image) {
-		return cairo_surface_get_content(surface->image) == CAIRO_CONTENT_COLOR;
-	}
-	return (surface->state->args.colors.background & 0xff) == 0xff;
-}
-
 static void create_surface(struct swaylock_surface *surface) {
 	struct swaylock_state *state = surface->state;
-
-	surface->image = select_image(state, surface);
 
 	surface->surface.surface = wl_compositor_create_surface(state->compositor);
 	assert(surface->surface.surface);
@@ -259,15 +249,11 @@ static void create_surface(struct swaylock_surface *surface) {
 	ext_session_lock_surface_v1_add_listener(surface->ext_session_lock_surface_v1,
 			&ext_session_lock_surface_v1_listener, surface);
 
-	if (surface_is_opaque(surface) &&
-			surface->state->args.mode != BACKGROUND_MODE_CENTER &&
-			surface->state->args.mode != BACKGROUND_MODE_FIT) {
-		struct wl_region *region =
-			wl_compositor_create_region(surface->state->compositor);
-		wl_region_add(region, 0, 0, INT32_MAX, INT32_MAX);
-		wl_surface_set_opaque_region(surface->surface.surface, region);
-		wl_region_destroy(region);
-	}
+	struct wl_region *region =
+		wl_compositor_create_region(surface->state->compositor);
+	wl_region_add(region, 0, 0, INT32_MAX, INT32_MAX);
+	wl_surface_set_opaque_region(surface->surface.surface, region);
+	wl_region_destroy(region);
 
 	if (state->forward.fractional_scale) {
 		surface->fractional_scale = wp_fractional_scale_manager_v1_get_fractional_scale(
@@ -648,20 +634,6 @@ void do_sigusr2(int sig) {
 	(void)write(sigusr2_fds[1], "1", 1);
 }
 
-static cairo_surface_t *select_image(struct swaylock_state *state,
-		struct swaylock_surface *surface) {
-	struct swaylock_image *image;
-	cairo_surface_t *default_image = NULL;
-	wl_list_for_each(image, &state->images, link) {
-		if (lenient_strcmp(image->output_name, surface->output_name) == 0) {
-			return image->cairo_surface;
-		} else if (!image->output_name) {
-			default_image = image->cairo_surface;
-		}
-	}
-	return default_image;
-}
-
 static char *join_args(char **argv, int argc) {
 	assert(argc > 0);
 	int len = 0, i;
@@ -704,7 +676,6 @@ static void load_image(char *arg, struct swaylock_state *state) {
 						image->path);
 			}
 			wl_list_remove(&iter_image->link);
-			free(iter_image->cairo_surface);
 			free(iter_image->output_name);
 			free(iter_image->path);
 			free(iter_image);
@@ -728,14 +699,8 @@ static void load_image(char *arg, struct swaylock_state *state) {
 		wordfree(&p);
 	}
 
-	// Load the actual image
-	image->cairo_surface = load_background_image(image->path);
-	if (!image->cairo_surface) {
-		free(image);
-		return;
-	}
 	wl_list_insert(&state->images, &image->link);
-	swaylock_log(LOG_DEBUG, "Loaded image %s for output %s", image->path,
+	swaylock_log(LOG_DEBUG, "Set image %s for output %s", image->path,
 			image->output_name ? image->output_name : "*");
 }
 

@@ -1564,7 +1564,7 @@ static void zwlr_layer_surface_set_keyboard_interactivity(struct wl_client *clie
 }
 static void zwlr_layer_surface_get_popup(struct wl_client *client,
 		struct wl_resource *resource, struct wl_resource *popup) {
-	/* should never be called, as no xdg_popup can be ever be created */
+	/* should never be called, as no xdg_popup can ever be created */
 }
 static void zwlr_layer_surface_ack_configure(struct wl_client *client,
 	struct wl_resource *resource, uint32_t serial) {

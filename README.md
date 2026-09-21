@@ -28,7 +28,7 @@ is replaced by your desired program. Examples:
     #!/bin/sh
     file=`ls $1 | shuf -n 1`
     delay=60.
-    echo "Runnning swaybg for $delay secs on: $1/$file"
+    echo "Running swaybg for $delay secs on: $1/$file"
     timeout $delay swaybg -i $1/$file
     ```
 * Running X11 animation programs under `swaylock-plugin` is trickier, but
@@ -41,7 +41,7 @@ is replaced by your desired program. Examples:
   ```
 
 
-` swaylock-plugin` requires that the Wayland compositor implement the `ext-session-lock-v1` protocol.
+`swaylock-plugin` requires that the Wayland compositor implement the `ext-session-lock-v1` protocol.
 
 This is experimental software, so if something fails to work it's probably a bug
 in this program -- report it at https://github.com/mstoeckl/swaylock-plugin .

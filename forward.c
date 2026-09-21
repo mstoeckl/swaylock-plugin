@@ -480,7 +480,7 @@ static void nested_surface_commit(struct wl_client *client,
 
 		// When committing a plugin surface for the first time,
 		// if the upstream surface is also new, then forward the configure;
-		// but if the upsteam surface was configured long ago, then
+		// but if the upstream surface was configured long ago, then
 		// keep the configure local
 		if (!surface->sway_surface->used_first_configure) {
 			add_serial_pair(surface, surface->sway_surface->first_configure_serial, plugin_serial,
@@ -590,7 +590,7 @@ static void nested_surface_commit(struct wl_client *client,
 	}
 
 	if (sw_surf->client_submission_timer) {
-		/* Disarm timer, indicating that plugin have responded on time
+		/* Disarm timer, indicating that plugin has responded on time
 		 * for this output. */
 		loop_remove_timer(sw_surf->state->eventloop, sw_surf->client_submission_timer);
 		sw_surf->client_submission_timer = NULL;
@@ -1078,7 +1078,7 @@ static const struct wl_buffer_listener buffer_listener = {
 static void buffer_handle_resource_destroy(struct wl_resource *resource) {
 	assert(wl_resource_instance_of(resource, &wl_buffer_interface, &buffer_impl));
 	struct forward_buffer* buffer = wl_resource_get_user_data(resource);
-	/* The plugin can not longer attach the buffer, so clean up all
+	/* The plugin can no longer attach the buffer, so clean up all
 	 * places where it is committed. */
 	struct forward_surface *surface, *tmp;
 	wl_list_for_each_safe(surface, tmp, &buffer->committed_surfaces, committed.attachment_link) {
@@ -1842,7 +1842,7 @@ static void image_desc_handle_failed(void *data,
 static void image_desc_handle_ready(void *data,
 		struct wp_image_description_v1 *wp_image_description_v1, uint32_t identity) {
 	// ID numbers are server allocated, and swaylock's image descriptions
-	// outlive the plugin clients's, so these will remain unique even if there
+	// outlive the plugin clients', so these will remain unique even if there
 	// are multiple clients or clients are replaced
 	struct forward_image_desc* fwd_desc = data;
 	if (fwd_desc->resource) {
@@ -2128,7 +2128,7 @@ static void nested_color_feedback_get_preferred(struct wl_client *client,
 
 	create_output_image_desc(resource, props, image_description);
 }
-static void nested_color_feedback_get_preferred_parameteric(struct wl_client *client,
+static void nested_color_feedback_get_preferred_parametric(struct wl_client *client,
 		struct wl_resource *resource, uint32_t image_description) {
 	struct forward_surface *fwd_surface = wl_resource_get_user_data(resource);
 	struct swaylock_surface *surface = fwd_surface->sway_surface;
@@ -2151,7 +2151,7 @@ static void nested_color_feedback_get_preferred_parameteric(struct wl_client *cl
 static const struct wp_color_management_surface_feedback_v1_interface color_feedback_impl = {
 	.destroy = nested_color_feedback_destroy,
 	.get_preferred = nested_color_feedback_get_preferred,
-	.get_preferred_parametric = nested_color_feedback_get_preferred_parameteric,
+	.get_preferred_parametric = nested_color_feedback_get_preferred_parametric,
 };
 
 

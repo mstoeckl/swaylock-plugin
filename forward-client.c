@@ -63,7 +63,7 @@ const struct zwp_linux_dmabuf_v1_listener linux_dmabuf_listener = {
 
 static void dmabuf_feedback_done(void *data,
 		struct zwp_linux_dmabuf_feedback_v1 *zwp_linux_dmabuf_feedback_v1) {
-	/* cleanup outdated tranches */
+	/* clean up outdated tranches */
 	struct forward_state *forward = data;
 	for (size_t i = 0; i < forward->current.tranches_len; i++) {
 		wl_array_release(&forward->current.tranches[i].indices);

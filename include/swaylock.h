@@ -229,7 +229,7 @@ struct forward_state {
 	uint32_t *supported_primaries;
 	size_t supported_primaries_len;
 
-	// Test surface created to get the default surface parameteric feedback
+	// Test surface created to get the default surface parametric feedback
 	// in the absence of any other outputs.
 	//
 	// TODO: rework surface creation process so that lock surfaces are created
@@ -431,7 +431,7 @@ struct forward_surface {
 	/* The external wl_surface and associated fields corresponding to this
 	 * surface, if it exists */
 	struct augmented_surface ext_surface;
-	/* The external wl_subsurface corresponding to this surface, if is exists */
+	/* The external wl_subsurface corresponding to this surface, if it exists */
 	struct wl_subsurface *ext_subsurface;
 	/* These are present if their link is not an empty list */
 	struct subsurface_entry subsurf_pending_entry;

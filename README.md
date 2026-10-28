@@ -10,8 +10,8 @@ is replaced by your desired program. Examples:
 * [`swaybg`](https://github.com/swaywm/swaybg), which displays regular background images
 * [`mpvpaper`](https://github.com/GhostNaN/mpvpaper), which lets you play videos
 * [`shaderbg`](https://git.sr.ht/~mstoeckl/shaderbg), renders OpenGL shaders
-* [`rwalkbg`](https://git.sr.ht/~mstoeckl/rwalkbg), a very slow animation
-* [`wscreensaver`](https://git.sr.ht/~mstoeckl/wscreensaver), an experiment in porting
+* [`rwalkbg`](https://codeberg.org/mstoeckl/swall#extra-animated-wallpapers), a very slow animation
+* [`wscreensaver`](https://git.sr.ht/~mstoeckl/wscreensaver), an abandoned experiment in porting
    a few xscreensaver hacks to Wayland. Best with the `--command-each` flag.
 * [`windowtolayer`](https://gitlab.freedesktop.org/mstoeckl/windowtolayer), a tool that
    can be used to run normally windowed applications, like terminals, as wallpapers.

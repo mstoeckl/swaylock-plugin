@@ -170,7 +170,7 @@ int run(int comm_r, int comm_w) {
 
 	ret = sd_bus_match_signal(state.bus, NULL, DBUS_LOGIND_SERVICE,
 		DBUS_LOGIND_PATH, DBUS_LOGIND_MANAGER_INTERFACE,
-		"PrepareForSleep", prepare_for_sleep, NULL);
+		"PrepareForSleep", prepare_for_sleep, &state);
 	if (ret < 0) {
 		errno = -ret;
 		swaylock_log_errno(LOG_ERROR, "Failed to add D-Bus signal match : sleep");

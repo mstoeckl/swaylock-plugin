@@ -1906,8 +1906,20 @@ static bool spawn_command(struct swaylock_state *state, int sock_child,
 	/* Make child processes their own session leader. This ensures that
 	 * they do not have a controlling terminal, and thus should not expect
 	 * to interact on swaylock's terminal */
-	if (posix_spawnattr_setflags(&attribs, posix_spawn_setsid_flag()) != 0) {
+	if (posix_spawnattr_setflags(&attribs,
+			posix_spawn_setsid_flag() | POSIX_SPAWN_SETSIGDEF) != 0) {
 		swaylock_log(LOG_ERROR, "Failed to set spawn flags");
+		goto end;
+	}
+
+	/* Reset SIGCHLD handling to default, because Linux appears to inherit
+	 * SIG_IGN for it, and too many programs rely on the SIGCHLD configuration
+	 * but neither check nor set it themselves */
+	sigset_t sigdefaults = {0};
+	assert(sigemptyset(&sigdefaults) == 0);
+	assert(sigaddset(&sigdefaults, SIGCHLD) == 0);
+	if (posix_spawnattr_setsigdefault(&attribs, &sigdefaults) != 0) {
+		swaylock_log(LOG_ERROR, "Failed to set spawn signal defaults");
 		goto end;
 	}
 
@@ -2559,7 +2571,6 @@ int main(int argc, char **argv) {
 	sigaction(SIGUSR2, &sa, NULL);
 
 	// Ignore SIGCHLD, to make child processes be automatically reaped.
-	// (This setting is not inherited to child processes.)
 	struct sigaction sa2;
 	sa2.sa_handler = SIG_IGN;
 	sigemptyset(&sa2.sa_mask);

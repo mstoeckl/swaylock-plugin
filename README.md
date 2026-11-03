@@ -11,8 +11,6 @@ is replaced by your desired program. Examples:
 * [`mpvpaper`](https://github.com/GhostNaN/mpvpaper), which lets you play videos
 * [`shaderbg`](https://git.sr.ht/~mstoeckl/shaderbg), renders OpenGL shaders
 * [`rwalkbg`](https://codeberg.org/mstoeckl/swall#extra-animated-wallpapers), a very slow animation
-* [`wscreensaver`](https://git.sr.ht/~mstoeckl/wscreensaver), an abandoned experiment in porting
-   a few xscreensaver hacks to Wayland. Best with the `--command-each` flag.
 * [`windowtolayer`](https://gitlab.freedesktop.org/mstoeckl/windowtolayer), a tool that
    can be used to run normally windowed applications, like terminals, as wallpapers.
    Requires `--command-each` flag. For example:
@@ -31,14 +29,19 @@ is replaced by your desired program. Examples:
     echo "Running swaybg for $delay secs on: $1/$file"
     timeout $delay swaybg -i $1/$file
     ```
-* Running X11 animation programs under `swaylock-plugin` is trickier, but
-  can be done using `windowtolayer`, `Xwayland`, and a script
-  ([`example_xwayland_wrapper.py`](example_xwayland_wrapper.py)) that runs a
-  program under `Xwayland`. For example,
+* Running X11 animation programs like those of XScreenSaver under
+  `swaylock-plugin` is trickier:
+  * Using `windowtolayer`, `Xwayland`, and a script
+  ([`example_xwayland_wrapper.py`](example_xwayland_wrapper.py) that runs a
+  program under `Xwayland`.
   ```
   swaylock-plugin --command-each \
     'windowtolayer example_xwayland_wrapper.py /usr/lib/xscreensaver/abstractile -root'
   ```
+  * Port the animations directly to Wayland. Most use basic OpenGL, Vulkan, or 2d rendering
+    primitives, and do not actually involve much X11-specific code. See for example
+    [`wscreensaver`](https://git.sr.ht/~mstoeckl/wscreensaver), an abandoned experiment
+    in porting a few XScreenSaver hacks to Wayland.
 
 
 `swaylock-plugin` requires that the Wayland compositor implement the `ext-session-lock-v1` protocol.
@@ -138,3 +141,17 @@ group, the binary can be made sgid instead:
     sudo chmod g+s /usr/local/bin/swaylock-plugin
 
 `swaylock-plugin` will drop root permissions shortly after startup.
+
+## Security
+
+In addition to the basic considerations when using `swaylock` (always encrypt swap!),
+please note:
+
+`swaylock-plugin` does not constrain the things that an animated wallpaper program it
+runs may do. Even if you sandbox and block everything but the Wayland protocol
+connection used by `swaylock-plugin` to connect to the program, it may still exploit
+bugs in `swaylock-plugin` and (because `swaylock-plugin` passes through data from
+the program largely unmodified and unvalidated) in your Wayland compositor. Only
+run programs whose code either you or someone you trust has reviewed. `swaylock-plugin`
+is written in C and the interface to the wallpaper programs is large enough that
+there is no audit method which can guarantee you that there are no exploitable bugs.
